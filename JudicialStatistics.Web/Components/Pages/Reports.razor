@@ -1,0 +1,1733 @@
+@page "/reports"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using Microsoft.AspNetCore.Authorization
+@using JudicialStatistics.Application.Organization
+@inject IReportsService ReportsService
+@inject IJudicialYearsService YearsService
+@inject ICourtsService CourtsService
+@inject IOrganizationService OrgService
+@inject IJSRuntime JSRuntime
+
+<PageTitle>التقارير الإحصائية وترتيب الدوائر — الإحصاء القضائي</PageTitle>
+
+<div class="page-header d-flex justify-between align-center flex-wrap gap-3">
+    <div>
+        <h1 class="page-title">📊 التقارير الإحصائية ومؤشرات إنجاز وترتيب الدوائر</h1>
+        <p class="page-subtitle">كشوف ترتيب الدوائر القضائية، وتوزيع الأحكام، ومعدلات الفصل الشهرية والتراكمية</p>
+    </div>
+    <div class="d-flex align-center gap-2 flex-wrap d-print-none">
+        <a href="/reports/entry-progress" class="btn btn-primary d-flex align-center gap-2">
+            <span>📋 كشف نسبة إدخال الإحصائيات (شاشة كاملة)</span>
+        </a>
+        @if (activeTab == "rankings" && rankingReport is not null)
+        {
+            <button class="btn btn-success d-flex align-center gap-2" @onclick="ExportToExcelAsync" disabled="@isExporting">
+                @if (isExporting)
+                {
+                    <span class="spinner-border spinner-border-sm" role="status"></span>
+                    <span>جاري إنشاء ملف الإكسل...</span>
+                }
+                else
+                {
+                    <span>📥 تصدير كشف الترتيب إلى Excel (.xlsx)</span>
+                }
+            </button>
+        }
+        @if (activeTab == "inventory" && inventoryReport is not null)
+        {
+            <button class="btn btn-success d-flex align-center gap-2" @onclick="ExportInventoryToExcelAsync" disabled="@isExporting">
+                @if (isExporting)
+                {
+                    <span class="spinner-border spinner-border-sm" role="status"></span>
+                    <span>جاري التصدير...</span>
+                }
+                else
+                {
+                    <span>📥 تصدير كشف الجرد إلى Excel (.xlsx)</span>
+                }
+            </button>
+            <button class="btn btn-outline-secondary d-flex align-center gap-2" @onclick="PrintReportAsync">
+                <span>🖨️ طباعة / حفظ PDF</span>
+            </button>
+        }
+        @if (activeTab == "judge_sessions" && judgeSessionsReport is not null)
+        {
+            <button class="btn btn-success d-flex align-center gap-2" @onclick="ExportJudgeSessionsToExcelAsync" disabled="@isExporting">
+                @if (isExporting)
+                {
+                    <span class="spinner-border spinner-border-sm" role="status"></span>
+                    <span>جاري التصدير...</span>
+                }
+                else
+                {
+                    <span>📥 تصدير أحكام القاضي إلى Excel (.xlsx)</span>
+                }
+            </button>
+            <button class="btn btn-outline-secondary d-flex align-center gap-2" @onclick="PrintReportAsync">
+                <span>🖨️ طباعة / حفظ PDF</span>
+            </button>
+        }
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(exportMessage))
+{
+    <div class="alert @(exportMessage.Contains("فشل") || exportMessage.Contains("خطأ") ? "alert-danger" : "alert-success") alert-dismissible mb-3 d-flex justify-between align-center d-print-none">
+        <div>@exportMessage</div>
+        <button type="button" class="btn-close" @onclick="() => exportMessage = null">✕</button>
+    </div>
+}
+
+@* تبويبات التقارير *@
+<div class="tabs mb-4 d-print-none">
+    <button class="tab @(activeTab == "rankings" ? "active" : "")" @onclick='() => SetTab("rankings")'>
+        🏆 كشوف ترتيب الدوائر القضائية (مؤشرات الإنجاز)
+    </button>
+    <button class="tab @(activeTab == "inventory" ? "active" : "")" @onclick='() => SetTab("inventory")'>
+        📦 كشف الجرد الشهري (الرصيد المتاح)
+    </button>
+    <button class="tab @(activeTab == "judge_sessions" ? "active" : "")" @onclick='() => SetTab("judge_sessions")'>
+        👨‍⚖️ تقرير إنجاز السادة القضاة (أحكام الجلسات)
+    </button>
+    <button class="tab @(activeTab == "period" ? "active" : "")" @onclick='() => SetTab("period")'>
+        📊 التقرير الشهري العام للمحكمة
+    </button>
+    <button class="tab @(activeTab == "annual" ? "active" : "")" @onclick='() => SetTab("annual")'>
+        📅 التقرير السنوي التراكمي
+    </button>
+</div>
+
+@* شريط التصفية والتحكم المشترك والمخصص لكشوف الترتيب والجرد وأحكام القضاة *@
+<div class="card mb-4 d-print-none" style="padding:1.25rem;background:var(--surface-hover);border-radius:8px">
+    <div class="d-flex align-center gap-3 flex-wrap">
+        @* العام القضائي *@
+        <div class="d-flex flex-column gap-1">
+            <label class="fw-semibold text-muted small">العام القضائي:</label>
+            <select class="form-control form-control-sm" style="min-width:160px" @onchange="OnYearChanged">
+                @if (years is not null)
+                {
+                    @foreach (var y in years)
+                    {
+                        <option value="@y.Id" selected="@(selectedYearId == y.Id)">@y.NameAr</option>
+                    }
+                }
+            </select>
+        </div>
+
+        @if (activeTab == "inventory")
+        {
+            @* شهر الإيداع الأساسي للجرد *@
+            <div class="d-flex flex-column gap-1">
+                <label class="fw-semibold text-muted small">شهر الإيداع الأساسي (حصر المؤجلات لما بعده):</label>
+                <select class="form-control form-control-sm" style="min-width:210px;font-weight:600;color:#1a4a6b" @onchange="OnBasePeriodChanged">
+                    @if (periods is not null)
+                    {
+                        @foreach (var p in periods)
+                        {
+                            <option value="@p.Id" selected="@(selectedBasePeriodId == p.Id)">@p.MonthNameAr</option>
+                        }
+                    }
+                </select>
+            </div>
+
+            @* تصفية المحكمة *@
+            <div class="d-flex flex-column gap-1">
+                <label class="fw-semibold text-muted small">المحكمة:</label>
+                <select class="form-control form-control-sm" style="min-width:200px" @onchange="OnCourtChanged">
+                    <option value="">-- كافة المحاكم التابعة --</option>
+                    @if (courts is not null)
+                    {
+                        @foreach (var c in courts)
+                        {
+                            <option value="@c.Id" selected="@(selectedCourtId == c.Id)">@c.NameAr</option>
+                        }
+                    }
+                </select>
+            </div>
+        }
+        else if (activeTab == "judge_sessions")
+        {
+            @* 1. فلترة المحكمة *@
+            <div class="d-flex flex-column gap-1">
+                <label class="fw-semibold text-muted small">المحكمة:</label>
+                <select class="form-control form-control-sm" style="min-width:170px" @onchange="OnJudgeCourtChanged">
+                    <option value="">-- كافة المحاكم --</option>
+                    @if (courts is not null)
+                    {
+                        @foreach (var c in courts)
+                        {
+                            <option value="@c.Id" selected="@(selectedJudgeCourtId == c.Id)">@c.NameAr</option>
+                        }
+                    }
+                </select>
+            </div>
+
+            @* 2. فلترة الدائرة *@
+            <div class="d-flex flex-column gap-1">
+                <label class="fw-semibold text-muted small">الدائرة القضائية:</label>
+                <select class="form-control form-control-sm" style="min-width:190px" @onchange="OnJudgeCircuitChanged">
+                    <option value="">-- كافة الدوائر --</option>
+                    @if (judgeCircuits is not null)
+                    {
+                        var circuitsToShow = selectedJudgeCourtId.HasValue 
+                            ? judgeCircuits.Where(jc => jc.CourtUnitId == selectedJudgeCourtId.Value).ToList() 
+                            : judgeCircuits;
+                        @foreach (var c in circuitsToShow)
+                        {
+                            <option value="@c.Id" selected="@(selectedJudgeCircuitId == c.Id)">@c.NameAr (@c.Code)</option>
+                        }
+                    }
+                </select>
+            </div>
+
+            @* 3. البحث باسم القاضي *@
+            <div class="d-flex flex-column gap-1">
+                <label class="fw-semibold text-muted small">بحث باسم القاضي:</label>
+                <div class="position-relative">
+                    <input type="text" class="form-control form-control-sm" style="min-width:180px"
+                           placeholder="🔍 اكتب اسم القاضي..."
+                           @bind="judgeSearchQuery" @bind:event="oninput" />
+                </div>
+            </div>
+
+            @* 4. اختيار القاضي *@
+            <div class="d-flex flex-column gap-1">
+                <label class="fw-semibold text-muted small">
+                    السيد القاضي:
+                    @if (!string.IsNullOrWhiteSpace(judgeSearchQuery))
+                    {
+                        <span class="badge bg-primary ms-1" style="font-size:0.7rem">@GetFilteredJudges().Count() مطابق</span>
+                    }
+                </label>
+                <select class="form-control form-control-sm" style="min-width:240px;font-weight:600;color:#1a4a6b" @onchange="OnJudgeChanged">
+                    <option value="">-- اختر القاضي لعرض تقريره --</option>
+                    @foreach (var j in GetFilteredJudges())
+                    {
+                        <option value="@j.Id" selected="@(selectedJudgeId == j.Id)">@j.FullNameAr (@j.Code)</option>
+                    }
+                </select>
+            </div>
+
+            @* 5. طريقة تحديد الفترة *@
+            <div class="d-flex flex-column gap-1">
+                <label class="fw-semibold text-muted small">نطاق الفترة:</label>
+                <select class="form-control form-control-sm" style="min-width:150px" @onchange="OnPeriodModeChanged">
+                    <option value="range" selected="@(periodSelectionMode == "range")">نطاق شهور (من - إلى)</option>
+                    <option value="single" selected="@(periodSelectionMode == "single")">شهر محدد</option>
+                    <option value="all" selected="@(periodSelectionMode == "all")">كامل العام القضائي</option>
+                </select>
+            </div>
+
+            @if (periodSelectionMode == "single")
+            {
+                <div class="d-flex flex-column gap-1">
+                    <label class="fw-semibold text-muted small">الشهر:</label>
+                    <select class="form-control form-control-sm" style="min-width:150px" @onchange="OnSinglePeriodChanged">
+                        @if (periods is not null)
+                        {
+                            @foreach (var p in periods)
+                            {
+                                <option value="@p.Id" selected="@(selectedPeriodId == p.Id)">@p.MonthNameAr</option>
+                            }
+                        }
+                    </select>
+                </div>
+            }
+            else if (periodSelectionMode == "range")
+            {
+                <div class="d-flex flex-column gap-1">
+                    <label class="fw-semibold text-muted small">من شهر:</label>
+                    <select class="form-control form-control-sm" style="min-width:140px" @onchange="OnRangeStartChanged">
+                        @if (periods is not null)
+                        {
+                            @foreach (var p in periods)
+                            {
+                                <option value="@p.Id" selected="@(rangeStartPeriodId == p.Id)">@p.MonthNameAr</option>
+                            }
+                        }
+                    </select>
+                </div>
+                <div class="d-flex flex-column gap-1">
+                    <label class="fw-semibold text-muted small">إلى شهر:</label>
+                    <select class="form-control form-control-sm" style="min-width:140px" @onchange="OnRangeEndChanged">
+                        @if (periods is not null)
+                        {
+                            @foreach (var p in periods)
+                            {
+                                <option value="@p.Id" selected="@(rangeEndPeriodId == p.Id)">@p.MonthNameAr</option>
+                            }
+                        }
+                    </select>
+                </div>
+            }
+        }
+        else if (activeTab == "rankings")
+        {
+            @* نوع الترتيب / الكشف القضائي *@
+            <div class="d-flex flex-column gap-1">
+                <label class="fw-semibold text-muted small">نوع الكشف / الترتيب القضائي:</label>
+                <select class="form-control form-control-sm" style="min-width:260px;font-weight:600;color:#1a4a6b" @onchange="OnReportTypeChanged">
+                    <option value="CivilFull" selected="@(selectedReportType == "CivilFull")">⚖️ ترتيب دوائر المدني الكلي</option>
+                    <option value="PartialCivil" selected="@(selectedReportType == "PartialCivil")">📑 ترتيب دوائر المدني الجزئي وصحة التوقيع</option>
+                    <option value="Family" selected="@(selectedReportType == "Family")">👨‍👩‍👧‍👦 ترتيب دوائر محكمة الأسرة</option>
+                    <option value="Labor" selected="@(selectedReportType == "Labor")">👷 ترتيب الدوائر العمالية (عمال وتأمينات)</option>
+                    <option value="LaborMisdemeanor" selected="@(selectedReportType == "LaborMisdemeanor")">⚖️ ترتيب دوائر جنح العمال (بمفردها)</option>
+                    <option value="PartialMisdemeanor" selected="@(selectedReportType == "PartialMisdemeanor")">🚨 ترتيب دوائر الجنح الجزئي المتنوع</option>
+                    <option value="AppealMisdemeanor" selected="@(selectedReportType == "AppealMisdemeanor")">🏛️ ترتيب دوائر الجنح المستأنفة والأحداث</option>
+                </select>
+            </div>
+
+            @* طريقة تحديد الفترة *@
+            <div class="d-flex flex-column gap-1">
+                <label class="fw-semibold text-muted small">نطاق الفترة:</label>
+                <select class="form-control form-control-sm" style="min-width:150px" @onchange="OnPeriodModeChanged">
+                    <option value="single" selected="@(periodSelectionMode == "single")">شهر محدد</option>
+                    <option value="range" selected="@(periodSelectionMode == "range")">نطاق شهور (من - إلى)</option>
+                    <option value="all" selected="@(periodSelectionMode == "all")">كامل العام القضائي</option>
+                </select>
+            </div>
+
+            @if (periodSelectionMode == "single")
+            {
+                <div class="d-flex flex-column gap-1">
+                    <label class="fw-semibold text-muted small">الشهر:</label>
+                    <select class="form-control form-control-sm" style="min-width:160px" @onchange="OnSinglePeriodChanged">
+                        @if (periods is not null)
+                        {
+                            @foreach (var p in periods)
+                            {
+                                <option value="@p.Id" selected="@(selectedPeriodId == p.Id)">@p.MonthNameAr</option>
+                            }
+                        }
+                    </select>
+                </div>
+            }
+            else if (periodSelectionMode == "range")
+            {
+                <div class="d-flex flex-column gap-1">
+                    <label class="fw-semibold text-muted small">من شهر:</label>
+                    <select class="form-control form-control-sm" style="min-width:150px" @onchange="OnRangeStartChanged">
+                        @if (periods is not null)
+                        {
+                            @foreach (var p in periods)
+                            {
+                                <option value="@p.Id" selected="@(rangeStartPeriodId == p.Id)">@p.MonthNameAr</option>
+                            }
+                        }
+                    </select>
+                </div>
+                <div class="d-flex flex-column gap-1">
+                    <label class="fw-semibold text-muted small">إلى شهر:</label>
+                    <select class="form-control form-control-sm" style="min-width:150px" @onchange="OnRangeEndChanged">
+                        @if (periods is not null)
+                        {
+                            @foreach (var p in periods)
+                            {
+                                <option value="@p.Id" selected="@(rangeEndPeriodId == p.Id)">@p.MonthNameAr</option>
+                            }
+                        }
+                    </select>
+                </div>
+            }
+
+            @* تصفية المحكمة *@
+            <div class="d-flex flex-column gap-1">
+                <label class="fw-semibold text-muted small">المحكمة:</label>
+                <select class="form-control form-control-sm" style="min-width:200px" @onchange="OnCourtChanged">
+                    <option value="">-- كافة المحاكم التابعة --</option>
+                    @if (courts is not null)
+                    {
+                        @foreach (var c in courts)
+                        {
+                            <option value="@c.Id" selected="@(selectedCourtId == c.Id)">@c.NameAr</option>
+                        }
+                    }
+                </select>
+            </div>
+
+            @* زر خصم الموقوف الخاص بالجنح الجزئي *@
+            @if (selectedReportType == "PartialMisdemeanor")
+            {
+                <div class="d-flex flex-column gap-1 align-self-end">
+                    <label class="fw-semibold text-muted small">معادلة المقدم والوقف:</label>
+                    <button type="button" class="btn btn-sm @(deductSuspendedInMisdemeanors ? "btn-warning" : "btn-outline-secondary") d-flex align-center gap-1"
+                            @onclick="ToggleDeductSuspended" title="التبديل بين خصم الموقوف من المقدم أو حسابه بدون خصم">
+                        <span>خصم الموقوف من المقدم:</span>
+                        <strong>@(deductSuspendedInMisdemeanors ? "مفعل (يُخصم)" : "معطل (لا يُخصم)")</strong>
+                    </button>
+                </div>
+            }
+        }
+        else
+        {
+            @* الشهر للتقارير العامة *@
+            <div class="d-flex flex-column gap-1">
+                <label class="fw-semibold text-muted small">الشهر / الفترة:</label>
+                <select class="form-control form-control-sm" style="min-width:160px" @onchange="OnPeriodChanged">
+                    @if (periods is not null)
+                    {
+                        @foreach (var p in periods)
+                        {
+                            <option value="@p.Id" selected="@(selectedPeriodId == p.Id)">@p.MonthNameAr</option>
+                        }
+                    }
+                </select>
+            </div>
+
+            @* تصفية المحكمة *@
+            <div class="d-flex flex-column gap-1">
+                <label class="fw-semibold text-muted small">المحكمة:</label>
+                <select class="form-control form-control-sm" style="min-width:200px" @onchange="OnCourtChanged">
+                    <option value="">-- كافة المحاكم التابعة --</option>
+                    @if (courts is not null)
+                    {
+                        @foreach (var c in courts)
+                        {
+                            <option value="@c.Id" selected="@(selectedCourtId == c.Id)">@c.NameAr</option>
+                        }
+                    }
+                </select>
+            </div>
+        }
+    </div>
+</div>
+
+@if (activeTab == "judge_sessions" && !string.IsNullOrWhiteSpace(judgeSearchQuery))
+{
+    var quickJudges = GetFilteredJudges().Take(8).ToList();
+    if (quickJudges.Count > 0)
+    {
+        <div class="mb-3 d-flex align-center gap-2 flex-wrap d-print-none">
+            <span class="small fw-semibold text-muted">نتائج البحث السريع (انقر لاختيار القاضي):</span>
+            @foreach (var qj in quickJudges)
+            {
+                <button type="button" class="btn btn-sm @(selectedJudgeId == qj.Id ? "btn-primary" : "btn-outline-primary") py-1 px-2"
+                        @onclick="() => SelectJudge(qj.Id)">
+                    👨‍⚖️ @qj.FullNameAr
+                </button>
+            }
+        </div>
+    }
+}
+
+@if (isLoading || isRankingLoading || isInventoryLoading || isJudgeSessionsLoading)
+{
+    <div style="padding:4rem;text-align:center" class="d-print-none">
+        <div class="spinner-border text-primary" style="width:3rem;height:3rem;margin-bottom:1rem" role="status"></div>
+        <div class="fw-semibold fs-5 text-muted">جاري احتساب البيانات والتقارير القضائية...</div>
+    </div>
+}
+else
+{
+    @* ================================= TAB 1: ترتيب الدوائر القضائية ================================= *@
+    @if (activeTab == "rankings")
+    {
+        @if (rankingReport is null || rankingReport.Rows.Count == 0)
+        {
+            <div class="card p-5 text-center">
+                <div class="fs-1 mb-2">⚖️</div>
+                <div class="fs-5 fw-bold text-muted">لا توجد دوائر مطابقة أو بيانات إحصائية مسجلة لهذه الفترة.</div>
+                <div class="small text-muted mt-1">تأكد من اختيار العام القضائي المناسب أو تفعيل دوائر هذا النوع في التشكيل.</div>
+            </div>
+        }
+        else
+        {
+            @* كارت الترويسة الرسمي *@
+            <div class="card mb-3" style="background:linear-gradient(135deg, #1a4a6b 0%, #2e75b6 100%);color:white;padding:1.25rem;border-radius:8px">
+                <div class="d-flex justify-between align-center flex-wrap gap-2">
+                    <div>
+                        <div class="small opacity-75">@rankingReport.CourtNameAr — قسم الإحصاء القضائي</div>
+                        <h2 class="fs-4 fw-bold mb-1">@rankingReport.ReportTitleAr</h2>
+                        <div class="small opacity-90">@rankingReport.PeriodRangeNameAr — العام القضائي: @rankingReport.JudicialYearNameAr</div>
+                    </div>
+                    <div class="d-flex gap-3 text-center flex-wrap">
+                        <div class="bg-white bg-opacity-10 p-2 rounded" style="min-width:100px">
+                            <div class="fs-5 fw-bold">@rankingReport.Rows.Count</div>
+                            <div class="small opacity-75">عدد الدوائر</div>
+                        </div>
+                        <div class="bg-white bg-opacity-10 p-2 rounded" style="min-width:110px">
+                            <div class="fs-5 fw-bold">@rankingReport.Totals.TotalIncoming.ToString("N0")</div>
+                            <div class="small opacity-75">إجمالي المقدم</div>
+                        </div>
+                        <div class="bg-white bg-opacity-10 p-2 rounded" style="min-width:110px">
+                            <div class="fs-5 fw-bold">@rankingReport.Totals.FinalJudgmentsCount.ToString("N0")</div>
+                            <div class="small opacity-75">إجمالي القطعي</div>
+                        </div>
+                        <div class="bg-white bg-opacity-10 p-2 rounded" style="min-width:110px">
+                            <div class="fs-5 fw-bold text-warning">@rankingReport.Totals.CompletionRate%</div>
+                            <div class="small opacity-75">معدل الإنجاز العام</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            @* جدول كشف الترتيب القضائي بتصميم الإكسل الرسمي *@
+            <div class="card mb-4" style="border-radius:8px;overflow:hidden">
+                <div class="card-body" style="padding:0;overflow-x:auto">
+                    <table class="table table-sm table-bordered text-center align-middle mb-0" style="min-width:1500px;font-size:0.86rem;direction:rtl">
+                        <thead>
+                            @* الصف العلوي: مجموعات الترويسة المدمجة بألوان الإكسل *@
+                            <tr style="font-weight:bold;color:white;font-size:0.88rem">
+                                <th colspan="5" style="background:#1a4a6b">بيانات الدائرة والتشكيل القضائي</th>
+                                
+                                @if (selectedReportType == "PartialMisdemeanor")
+                                {
+                                    <th colspan="@(deductSuspendedInMisdemeanors ? 3 : 2)" style="background:#2e75b6">المقدم والموقوف</th>
+                                }
+                                else
+                                {
+                                    <th colspan="1" style="background:#2e75b6">المقدم</th>
+                                }
+
+                                <th colspan="4" style="background:#375623">الأحكام الصادرة</th>
+                                <th colspan="2" style="background:#7030a0">المؤجلات</th>
+                                <th colspan="1" style="background:#c00000">نسبة الإنجاز</th>
+                                <th colspan="@(rankingReport.JudgeColumnsHeaders.Count + 1)" style="background:#843c0c">توزيع الأحكام القطعية على السادة القضاة</th>
+                            </tr>
+
+                            @* الصف الثاني: مسميات الأعمدة التفصيلية *@
+                            <tr style="background:#1a4a6b;color:white;font-size:0.82rem">
+                                <th style="width:50px">الترتيب</th>
+                                <th style="width:70px">الكود</th>
+                                <th style="min-width:180px;text-align:right">الدائرة</th>
+                                <th style="min-width:180px;text-align:right">السيد المستشار رئيس الدائرة</th>
+                                <th style="min-width:120px">المحكمة</th>
+                                <th style="width:85px;background:#2e75b6">@(selectedReportType == "PartialMisdemeanor" ? "المقدم الإجمالي" : "المقدم")</th>
+
+                                @if (selectedReportType == "PartialMisdemeanor")
+                                {
+                                    <th style="width:80px;background:#bf8f00">الموقوف (الوقف)</th>
+                                    @if (deductSuspendedInMisdemeanors)
+                                    {
+                                        <th style="width:85px;background:#2e75b6">الصافي بعد الخصم</th>
+                                    }
+                                }
+
+                                <th style="width:80px;background:#375623">الأحكام القطعية</th>
+                                <th style="width:75px;background:#375623">الإثبات / تمهيدي</th>
+                                <th style="width:65px;background:#375623">أخرى</th>
+                                <th style="width:80px;background:#375623">جملة الأحكام</th>
+
+                                <th style="width:80px;background:#7030a0">مؤجل للتقرير</th>
+                                <th style="width:80px;background:#7030a0">إجمالي المؤجل</th>
+
+                                <th style="width:90px;background:#c00000">النسبة %</th>
+
+                                @foreach (var jHeader in rankingReport.JudgeColumnsHeaders)
+                                {
+                                    <th style="min-width:90px;background:#843c0c">@jHeader</th>
+                                }
+                                <th style="width:90px;background:#1a4a6b">جملة القضاة</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in rankingReport.Rows)
+                            {
+                                <tr>
+                                    @* الترتيب والميداليات *@
+                                    <td class="fw-bold" style="background:#f8f9fa">
+                                        @if (row.Rank == 1)
+                                        {
+                                            <span title="المركز الأول" style="font-size:1.1rem">🥇 1</span>
+                                        }
+                                        else if (row.Rank == 2)
+                                        {
+                                            <span title="المركز الثاني" style="font-size:1.1rem">🥈 2</span>
+                                        }
+                                        else if (row.Rank == 3)
+                                        {
+                                            <span title="المركز الثالث" style="font-size:1.1rem">🥉 3</span>
+                                        }
+                                        else
+                                        {
+                                            <span>@row.Rank</span>
+                                        }
+                                    </td>
+                                    <td><code>@row.CircuitCode</code></td>
+                                    <td class="fw-bold text-end" style="color:#1a4a6b">@row.CircuitNameAr</td>
+                                    <td class="text-end">@row.PresidentJudgeNameAr</td>
+                                    <td class="text-muted small">@row.CourtNameAr</td>
+
+                                    @* المقدم *@
+                                    <td class="fw-semibold" style="background:#f0f6fc">@row.TotalIncoming.ToString("N0")</td>
+
+                                    @if (selectedReportType == "PartialMisdemeanor")
+                                    {
+                                        <td style="background:#fff9e6;color:#856404">@row.SuspendedCount.ToString("N0")</td>
+                                        @if (deductSuspendedInMisdemeanors)
+                                        {
+                                            <td class="fw-bold" style="background:#e8f4fc;color:#1a4a6b">@row.EffectiveIncoming.ToString("N0")</td>
+                                        }
+                                    }
+
+                                    @* الأحكام القطعية والإثبات *@
+                                    <td class="fw-bold" style="background:#e8f5e9;color:#1e4620">@row.FinalJudgmentsCount.ToString("N0")</td>
+                                    <td style="background:#f3e5f5">@row.EvidenceJudgmentsCount.ToString("N0")</td>
+                                    <td class="text-muted">@row.OtherJudgmentsCount.ToString("N0")</td>
+                                    <td class="fw-semibold" style="background:#f1f8e9">@row.TotalAllJudgmentsCount.ToString("N0")</td>
+
+                                    @* المؤجلات *@
+                                    <td style="background:#fffde7">@row.ReportPostponedCount.ToString("N0")</td>
+                                    <td class="fw-semibold" style="background:#f9fbe7">@row.TotalPostponedCount.ToString("N0")</td>
+
+                                    @* نسبة الإنجاز *@
+                                    <td style="background:#ffebee">
+                                        <span class="badge @(row.CompletionRate >= 50 ? "badge-success" : (row.CompletionRate >= 20 ? "badge-warning" : "badge-secondary")) px-2 py-1" style="font-size:0.85rem">
+                                            @row.CompletionRate%
+                                        </span>
+                                    </td>
+
+                                    @* توزيع أحكام القضاة القطعية *@
+                                    @for (int i = 0; i < rankingReport.JudgeColumnsHeaders.Count; i++)
+                                    {
+                                        var judgeVal = i < row.JudgesAllocations.Count ? row.JudgesAllocations[i].FinalJudgmentsCount : 0;
+                                        <td style="background:#fff8e1">@judgeVal.ToString("N0")</td>
+                                    }
+                                    <td class="fw-bold" style="background:#e0f2fe;color:#0369a1">@row.TotalJudgesAllocations.ToString("N0")</td>
+                                </tr>
+                            }
+                        </tbody>
+                        <tfoot>
+                            @* صف الإجمالي العام *@
+                            <tr style="background:#d9d9d9;font-weight:bold;font-size:0.88rem;border-top:2px solid #1a4a6b">
+                                <td colspan="5" class="text-center">الإجمالي العام</td>
+                                <td style="background:#cde4f7">@rankingReport.Totals.TotalIncoming.ToString("N0")</td>
+
+                                @if (selectedReportType == "PartialMisdemeanor")
+                                {
+                                    <td style="background:#fde9b8">@rankingReport.Totals.SuspendedCount.ToString("N0")</td>
+                                    @if (deductSuspendedInMisdemeanors)
+                                    {
+                                        <td style="background:#b9def7">@rankingReport.Totals.EffectiveIncoming.ToString("N0")</td>
+                                    }
+                                }
+
+                                <td style="background:#c8e6c9">@rankingReport.Totals.FinalJudgmentsCount.ToString("N0")</td>
+                                <td style="background:#e1bee7">@rankingReport.Totals.EvidenceJudgmentsCount.ToString("N0")</td>
+                                <td>@rankingReport.Totals.OtherJudgmentsCount.ToString("N0")</td>
+                                <td style="background:#dcedc8">@rankingReport.Totals.TotalAllJudgmentsCount.ToString("N0")</td>
+
+                                <td style="background:#fff9c4">@rankingReport.Totals.ReportPostponedCount.ToString("N0")</td>
+                                <td style="background:#f0f4c3">@rankingReport.Totals.TotalPostponedCount.ToString("N0")</td>
+
+                                <td style="background:#ffcdd2">@rankingReport.Totals.CompletionRate%</td>
+
+                                @for (int i = 0; i < rankingReport.JudgeColumnsHeaders.Count; i++)
+                                {
+                                    var judgeTotal = i < rankingReport.Totals.JudgesAllocations.Count ? rankingReport.Totals.JudgesAllocations[i].FinalJudgmentsCount : 0;
+                                    <td style="background:#ffecb3">@judgeTotal.ToString("N0")</td>
+                                }
+                                <td style="background:#bae6fd">@rankingReport.Totals.TotalJudgesAllocations.ToString("N0")</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </div>
+        }
+    }
+
+    @* ================================= TAB: كشف الجرد الشهري (الرصيد المتاح) ================================= *@
+    @if (activeTab == "inventory")
+    {
+        @if (inventoryReport is null)
+        {
+            <div class="card p-5 text-center">
+                <div class="fs-1 mb-2">📦</div>
+                <div class="fs-5 fw-bold text-muted">لا توجد بيانات جرد أو مؤجلات مسجلة لهذه الفترة.</div>
+                <div class="small text-muted mt-1">يرجى التأكد من اختيار شهر الإيداع الأساسي أو تسجيل إحصائيات الأشهر.</div>
+            </div>
+        }
+        else
+        {
+            @* كارت الترويسة الرسمي *@
+            <div class="card mb-3 print-card-banner" style="background:linear-gradient(135deg, #1e3a5f 0%, #2b5b84 100%);color:white;padding:1.25rem;border-radius:8px">
+                <div class="d-flex justify-between align-center flex-wrap gap-2">
+                    <div>
+                        <div class="small opacity-75">@inventoryReport.CourtNameAr — قسم الإحصاء القضائي</div>
+                        <h2 class="fs-4 fw-bold mb-1">📦 كشف الجرد الشهري وتحديد الرصيد المتاح (من المؤجلات على الشهور)</h2>
+                        <div class="small opacity-90">حصر المؤجلات اللاحقة بعد إيداع شهر: @inventoryReport.BasePeriodNameAr — العام القضائي: @inventoryReport.JudicialYearNameAr — النطاق: @inventoryReport.ScopeDescriptionAr</div>
+                    </div>
+                    <div class="d-flex gap-3 text-center flex-wrap">
+                        <div class="bg-white bg-opacity-10 p-2 rounded" style="min-width:110px">
+                            <div class="fs-5 fw-bold text-warning">@inventoryReport.GrandTotal.TotalAvailableBalance.ToString("N0")</div>
+                            <div class="small opacity-75">جملة الرصيد المتاح</div>
+                        </div>
+                        <div class="bg-white bg-opacity-10 p-2 rounded" style="min-width:110px">
+                            <div class="fs-5 fw-bold">@inventoryReport.GrandTotal.SubJudgmentsCount.ToString("N0")</div>
+                            <div class="small opacity-75">فرعي وإثبات</div>
+                        </div>
+                        <div class="bg-white bg-opacity-10 p-2 rounded" style="min-width:110px">
+                            <div class="fs-5 fw-bold">@inventoryReport.GrandTotal.ReservedCount.ToString("N0")</div>
+                            <div class="small opacity-75">محجوز للحكم</div>
+                        </div>
+                        <div class="bg-white bg-opacity-10 p-2 rounded" style="min-width:120px">
+                            <div class="fs-5 fw-bold text-info">@inventoryReport.GrandTotal.ReportNetCount.ToString("N0")</div>
+                            <div class="small opacity-75">صافي مؤجل للتقرير</div>
+                        </div>
+                        <div class="bg-white bg-opacity-10 p-2 rounded" style="min-width:110px">
+                            <div class="fs-5 fw-bold">@inventoryReport.GrandTotal.OtherPostponedCount.ToString("N0")</div>
+                            <div class="small opacity-75">مؤجل لأسباب أخرى</div>
+                        </div>
+                        <div class="bg-white bg-opacity-10 p-2 rounded" style="min-width:90px">
+                            <div class="fs-5 fw-bold">@inventoryReport.TargetMonths.Count</div>
+                            <div class="small opacity-75">الشهور اللاحقة</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            @* جدول الرصيد المتاح التراكمي لجميع الشهور اللاحقة *@
+            <div class="card mb-4" style="border-radius:8px;overflow:hidden">
+                <div class="card-header d-flex justify-between align-center" style="background:#f1f5f9;font-weight:700">
+                    <span>📊 جدول الرصيد المتاح التراكمي لجميع الشهور اللاحقة (موزع حسب السنوات والشرائح القضائية)</span>
+                    @if (inventoryReport.GrandTotal.ShortenedCount > 0)
+                    {
+                        <span class="badge bg-danger" style="font-size:0.8rem">
+                            تم خصم @inventoryReport.GrandTotal.ShortenedCount قضية مقصرة من الشهور التالية
+                        </span>
+                    }
+                </div>
+                <div class="card-body" style="padding:0;overflow-x:auto">
+                    <table class="table table-sm table-bordered text-center align-middle mb-0" style="min-width:920px;font-size:0.9rem;direction:rtl">
+                        <thead>
+                            <tr style="background:#1a4a6b;color:white;font-weight:bold">
+                                <th style="min-width:180px;text-align:right">السنوات / الشريحة القضائية</th>
+                                <th style="width:130px;background:#2e75b6">أحكام فرعية وإثبات</th>
+                                <th style="width:130px;background:#17a2b8">محجوز للحكم</th>
+                                <th style="width:120px;background:#6f42c1">مؤجل للتقرير (إجمالي)</th>
+                                <th style="width:120px;background:#dc3545">المقصر المخصوم (-)</th>
+                                <th style="width:130px;background:#5a32a3">صافي مؤجل للتقرير</th>
+                                <th style="width:150px;background:#fd7e14">مؤجل لأسباب أخرى</th>
+                                <th style="width:140px;background:#198754;font-size:0.95rem">جملة الرصيد المتاح</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @if (inventoryReport.CumulativeBandTotals.Count == 0)
+                            {
+                                <tr>
+                                    <td colspan="8" style="padding:2rem;color:var(--text-muted)">لا توجد مؤجلات للشهور التالية بعد شهر الإيداع المختار.</td>
+                                </tr>
+                            }
+                            else
+                            {
+                                @foreach (var band in inventoryReport.CumulativeBandTotals)
+                                {
+                                    <tr>
+                                        <td style="text-align:right;font-weight:600;background:#f8f9fa">@band.BandLabelAr</td>
+                                        <td>@(band.SubJudgmentsCount > 0 ? band.SubJudgmentsCount.ToString("N0") : "-")</td>
+                                        <td>@(band.ReservedCount > 0 ? band.ReservedCount.ToString("N0") : "-")</td>
+                                        <td>@(band.ReportGrossCount > 0 ? band.ReportGrossCount.ToString("N0") : "-")</td>
+                                        <td style="color:#dc3545;font-weight:bold">@(band.ShortenedCount > 0 ? $"-{band.ShortenedCount:N0}" : "-")</td>
+                                        <td style="font-weight:bold;background:#f3e8ff">@(band.ReportNetCount > 0 ? band.ReportNetCount.ToString("N0") : "-")</td>
+                                        <td>@(band.OtherPostponedCount > 0 ? band.OtherPostponedCount.ToString("N0") : "-")</td>
+                                        <td style="font-weight:bold;background:#d1e7dd;color:#0f5132">@band.TotalAvailableBalance.ToString("N0")</td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                        <tfoot>
+                            <tr style="background:#20374c;color:white;font-weight:bold;font-size:0.95rem">
+                                <td style="text-align:right">الإجمالي العام التراكمي (الرصيد المتاح)</td>
+                                <td>@inventoryReport.GrandTotal.SubJudgmentsCount.ToString("N0")</td>
+                                <td>@inventoryReport.GrandTotal.ReservedCount.ToString("N0")</td>
+                                <td>@inventoryReport.GrandTotal.ReportGrossCount.ToString("N0")</td>
+                                <td style="color:#ff8787">@(inventoryReport.GrandTotal.ShortenedCount > 0 ? $"-{inventoryReport.GrandTotal.ShortenedCount:N0}" : "0")</td>
+                                <td style="background:#492683">@inventoryReport.GrandTotal.ReportNetCount.ToString("N0")</td>
+                                <td>@inventoryReport.GrandTotal.OtherPostponedCount.ToString("N0")</td>
+                                <td style="background:#0f5132;font-size:1.1rem;color:#d1e7dd">@inventoryReport.GrandTotal.TotalAvailableBalance.ToString("N0")</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </div>
+
+            @* تفصيل الرصيد والمؤجلات لكل شهر لاحق *@
+            @if (inventoryReport.TargetMonths.Count > 0)
+            {
+                <div class="mt-4 mb-2">
+                    <h3 class="fs-5 fw-bold text-muted">🗓️ تفصيل الرصيد المتاح والمؤجلات موزعة على الشهور اللاحقة:</h3>
+                </div>
+
+                @foreach (var mSec in inventoryReport.TargetMonths)
+                {
+                    <div class="card mb-3" style="border-radius:8px;overflow:hidden">
+                        <div class="card-header d-flex justify-between align-center" style="background:#e9ecef;font-weight:600">
+                            <div>
+                                <span>📅 مؤجلات شهر: <strong>@mSec.TargetMonthNameAr</strong></span>
+                                <span class="text-muted small ms-2">(@mSec.TargetMonthStartDate.ToString("yyyy/MM/dd"))</span>
+                            </div>
+                            <div class="badge bg-success" style="font-size:0.85rem">
+                                رصيد متاح للشهر: @mSec.MonthTotals.TotalAvailableBalance.ToString("N0")
+                            </div>
+                        </div>
+                        <div class="card-body" style="padding:0;overflow-x:auto">
+                            <table class="table table-sm table-bordered text-center align-middle mb-0" style="min-width:850px;font-size:0.85rem;direction:rtl">
+                                <thead style="background:#34495e;color:white">
+                                    <tr>
+                                        <th style="min-width:160px;text-align:right">السنوات / الشريحة</th>
+                                        <th style="width:110px">فرعي وإثبات</th>
+                                        <th style="width:110px">محجوز للحكم</th>
+                                        <th style="width:110px">مؤجل للتقرير (إجمالي)</th>
+                                        <th style="width:110px">المقصر المخصوم</th>
+                                        <th style="width:110px">صافي التقرير</th>
+                                        <th style="width:120px">مؤجل لأسباب أخرى</th>
+                                        <th style="width:120px;background:#198754">الرصيد المتاح</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var b in mSec.BandRows)
+                                    {
+                                        <tr>
+                                            <td style="text-align:right;background:#f8f9fa">@b.BandLabelAr</td>
+                                            <td>@(b.SubJudgmentsCount > 0 ? b.SubJudgmentsCount.ToString("N0") : "-")</td>
+                                            <td>@(b.ReservedCount > 0 ? b.ReservedCount.ToString("N0") : "-")</td>
+                                            <td>@(b.ReportGrossCount > 0 ? b.ReportGrossCount.ToString("N0") : "-")</td>
+                                            <td style="color:#dc3545">@(b.ShortenedCount > 0 ? $"-{b.ShortenedCount:N0}" : "-")</td>
+                                            <td style="font-weight:600">@(b.ReportNetCount > 0 ? b.ReportNetCount.ToString("N0") : "-")</td>
+                                            <td>@(b.OtherPostponedCount > 0 ? b.OtherPostponedCount.ToString("N0") : "-")</td>
+                                            <td style="font-weight:bold;background:#d1e7dd;color:#0f5132">@b.TotalAvailableBalance.ToString("N0")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                                <tfoot style="background:#495057;color:white;font-weight:bold">
+                                    <tr>
+                                        <td style="text-align:right">إجمالي شهر @mSec.TargetMonthNameAr</td>
+                                        <td>@mSec.MonthTotals.SubJudgmentsCount.ToString("N0")</td>
+                                        <td>@mSec.MonthTotals.ReservedCount.ToString("N0")</td>
+                                        <td>@mSec.MonthTotals.ReportGrossCount.ToString("N0")</td>
+                                        <td style="color:#ff8787">@(mSec.MonthTotals.ShortenedCount > 0 ? $"-{mSec.MonthTotals.ShortenedCount:N0}" : "0")</td>
+                                        <td>@mSec.MonthTotals.ReportNetCount.ToString("N0")</td>
+                                        <td>@mSec.MonthTotals.OtherPostponedCount.ToString("N0")</td>
+                                        <td style="background:#198754;color:white">@mSec.MonthTotals.TotalAvailableBalance.ToString("N0")</td>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    </div>
+                }
+            }
+        }
+    }
+
+    @* ================================= TAB: أحكام قاضٍ محدد بالجلسات ================================= *@
+    @if (activeTab == "judge_sessions")
+    {
+        @if (!selectedJudgeId.HasValue)
+        {
+            <div class="card p-5 text-center">
+                <div class="fs-1 mb-2">👨‍⚖️</div>
+                <div class="fs-5 fw-bold text-muted">يرجى اختيار السيد القاضي من القائمة أعلاه لعرض أحكامه منسوبة للجلسات.</div>
+                <div class="small text-muted mt-1">يمكنك تحديد شهر محدد أو نطاق شهور أو كامل العام القضائي.</div>
+            </div>
+        }
+        else if (judgeSessionsReport is null || judgeSessionsReport.SessionRows.Count == 0)
+        {
+            <div class="card p-5 text-center">
+                <div class="fs-1 mb-2">⚖️</div>
+                <div class="fs-5 fw-bold text-muted">لا توجد أحكام قضائية أو جلسات مسجلة للسيد القاضي خلال الفترة المحددة.</div>
+                <div class="small text-muted mt-1">تأكد من اختيار العام القضائي أو الفترة التي باشر فيها القاضي الجلسات.</div>
+            </div>
+        }
+        else
+        {
+            @* كارت الترويسة الرسمي *@
+            <div class="card mb-3 print-card-banner" style="background:linear-gradient(135deg, #1b3d54 0%, #205c80 100%);color:white;padding:1.25rem;border-radius:8px">
+                <div class="d-flex justify-between align-center flex-wrap gap-2">
+                    <div>
+                        <div class="small opacity-75">@judgeSessionsReport.CourtNameAr — قسم الإحصاء القضائي</div>
+                        <h2 class="fs-4 fw-bold mb-1">👨‍⚖️ تقرير أحكام السيد المستشار / @judgeSessionsReport.JudgeFullNameAr</h2>
+                        <div class="small opacity-90">كود: @judgeSessionsReport.JudgeCode | الصفة: @judgeSessionsReport.JudicialRoleNameAr | @judgeSessionsReport.PeriodRangeNameAr — العام القضائي: @judgeSessionsReport.JudicialYearNameAr</div>
+                    </div>
+                    <div class="d-flex gap-3 text-center flex-wrap">
+                        <div class="bg-white bg-opacity-10 p-2 rounded" style="min-width:100px">
+                            <div class="fs-5 fw-bold">@judgeSessionsReport.SessionRows.Count</div>
+                            <div class="small opacity-75">الجلسات المنعقدة</div>
+                        </div>
+                        <div class="bg-white bg-opacity-10 p-2 rounded" style="min-width:110px">
+                            <div class="fs-5 fw-bold text-success">@judgeSessionsReport.GrandTotals.TotalFinalJudgmentsCount.ToString("N0")</div>
+                            <div class="small opacity-75">جملة القطعي</div>
+                        </div>
+                        <div class="bg-white bg-opacity-10 p-2 rounded" style="min-width:110px">
+                            <div class="fs-5 fw-bold">@judgeSessionsReport.GrandTotals.EvidenceJudgmentsCount.ToString("N0")</div>
+                            <div class="small opacity-75">الإثبات والتمهيدي</div>
+                        </div>
+                        <div class="bg-white bg-opacity-10 p-2 rounded" style="min-width:90px">
+                            <div class="fs-5 fw-bold">@judgeSessionsReport.GrandTotals.StayJudgmentsCount.ToString("N0")</div>
+                            <div class="small opacity-75">الوقف والإنهاء</div>
+                        </div>
+                        <div class="bg-white bg-opacity-10 p-2 rounded" style="min-width:120px">
+                            <div class="fs-5 fw-bold text-warning">@judgeSessionsReport.GrandTotals.GrandTotalJudgmentsCount.ToString("N0")</div>
+                            <div class="small opacity-75">جملة كافة الأحكام</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            @* جدول كشف أحكام وإنجاز القاضي بالجلسات *@
+            <div class="card mb-4" style="border-radius:8px;overflow:hidden">
+                <div class="card-header d-flex justify-between align-center flex-wrap gap-2" style="background:#f1f5f9;font-weight:700">
+                    <div class="d-flex align-center gap-2">
+                        <span>📋 تقرير إنجاز وأحكام السيد المستشار منسوبة للجلسات والدوائر القضائية</span>
+                        <span class="badge bg-secondary">@judgeSessionsReport.SessionRows.Count جلسات</span>
+                    </div>
+                    <div class="d-flex align-center gap-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary d-print-none" @onclick="() => showFinalBreakdown = !showFinalBreakdown">
+                            @(showFinalBreakdown ? "🔽 إخفاء تفاصيل القطعي" : "🔍 إظهار تفاصيل القطعي (قبول / رفض / شكلي)")
+                        </button>
+                        <span class="text-muted small">الفترة: @judgeSessionsReport.PeriodRangeNameAr</span>
+                    </div>
+                </div>
+                <div class="card-body" style="padding:0;overflow-x:auto">
+                    <table class="table table-sm table-bordered text-center align-middle mb-0" style="min-width:1150px;font-size:0.88rem;direction:rtl">
+                        <thead style="background:#1a4a6b;color:white">
+                            <tr style="font-size:0.86rem">
+                                <th style="width:45px">م</th>
+                                <th style="min-width:180px;text-align:right">اسم القاضي</th>
+                                <th style="min-width:180px;text-align:right">اسم الدائرة</th>
+                                <th style="width:130px">عمله بالدائرة</th>
+                                <th style="min-width:160px;text-align:right">اسم الجلسة</th>
+                                <th style="min-width:160px;text-align:right">نوع القضايا</th>
+                                <th style="width:110px;background:#2e75b6">الأحكام القطعية</th>
+                                <th style="width:120px;background:#375623">أحكام الفرعية والإثبات</th>
+                                <th style="width:100px;background:#7030a0">أحكام الوقف</th>
+                                <th style="width:90px;background:#595959">أحكام أخرى</th>
+                                <th style="width:115px;background:#843c0c;font-weight:bold">جملة الأحكام</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var (row, idx) in judgeSessionsReport.SessionRows.Select((r, i) => (r, i + 1)))
+                            {
+                                <tr>
+                                    <td class="fw-bold text-muted">@idx</td>
+                                    <td style="text-align:right;font-weight:600;color:#1a4a6b">@row.JudgeFullNameAr</td>
+                                    <td style="text-align:right;font-weight:600">@row.CircuitNameAr</td>
+                                    <td><span class="badge bg-secondary">@row.JudicialRoleNameAr</span></td>
+                                    <td style="text-align:right">
+                                        <div class="fw-semibold">@row.SessionNameAr</div>
+                                        @if (!string.IsNullOrWhiteSpace(row.ScheduleDescription))
+                                        {
+                                            <div class="small text-muted">@row.ScheduleDescription</div>
+                                        }
+                                    </td>
+                                    <td style="text-align:right;font-size:0.82rem;color:#495057">
+                                        @row.CaseTypesDescriptionAr
+                                    </td>
+                                    <td style="font-weight:bold;background:#e2eafc;color:#1a4a6b">
+                                        <div>@row.TotalFinalJudgmentsCount.ToString("N0")</div>
+                                        @if (showFinalBreakdown && (row.FinalAcceptCount > 0 || row.FinalRejectCount > 0 || row.FinalFormalRejectCount > 0 || row.OtherFinalCount > 0))
+                                        {
+                                            <div class="d-flex flex-wrap gap-1 justify-center mt-1" style="font-size:0.72rem">
+                                                <span class="badge bg-light text-dark border">قبول: @row.FinalAcceptCount</span>
+                                                <span class="badge bg-light text-dark border">رفض: @row.FinalRejectCount</span>
+                                                <span class="badge bg-light text-dark border">شكلي: @row.FinalFormalRejectCount</span>
+                                                <span class="badge bg-light text-dark border">آخر: @row.OtherFinalCount</span>
+                                            </div>
+                                        }
+                                    </td>
+                                    <td style="background:#e8f5e9;color:#1e4620;font-weight:600">
+                                        @(row.EvidenceJudgmentsCount > 0 ? row.EvidenceJudgmentsCount.ToString("N0") : "-")
+                                    </td>
+                                    <td style="background:#f3e5f5;color:#4a148c;font-weight:600">
+                                        @(row.StayJudgmentsCount > 0 ? row.StayJudgmentsCount.ToString("N0") : "-")
+                                    </td>
+                                    <td style="color:#6c757d">
+                                        @(row.OtherJudgmentsCount > 0 ? row.OtherJudgmentsCount.ToString("N0") : "-")
+                                    </td>
+                                    <td style="font-weight:bold;background:#fff3cd;color:#856404;font-size:0.95rem">
+                                        @row.GrandTotalJudgmentsCount.ToString("N0")
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                        <tfoot>
+                            <tr style="background:#1a4a6b;color:white;font-weight:bold;font-size:0.92rem">
+                                <td colspan="6" style="text-align:right;padding-right:1rem">
+                                    الإجمالي العام لكافة الجلسات خلال الفترة
+                                </td>
+                                <td style="background:#285b88;color:#ffe600;font-size:1.05rem">
+                                    <div>@judgeSessionsReport.GrandTotals.TotalFinalJudgmentsCount.ToString("N0")</div>
+                                    @if (showFinalBreakdown)
+                                    {
+                                        <div class="d-flex flex-wrap gap-1 justify-center mt-1" style="font-size:0.72rem;color:white">
+                                            <span>قبول: @judgeSessionsReport.GrandTotals.FinalAcceptCount</span> |
+                                            <span>رفض: @judgeSessionsReport.GrandTotals.FinalRejectCount</span> |
+                                            <span>شكلي: @judgeSessionsReport.GrandTotals.FinalFormalRejectCount</span>
+                                        </div>
+                                    }
+                                </td>
+                                <td style="background:#2d4a20">
+                                    @judgeSessionsReport.GrandTotals.EvidenceJudgmentsCount.ToString("N0")
+                                </td>
+                                <td style="background:#522378">
+                                    @judgeSessionsReport.GrandTotals.StayJudgmentsCount.ToString("N0")
+                                </td>
+                                <td style="background:#495057">
+                                    @judgeSessionsReport.GrandTotals.OtherJudgmentsCount.ToString("N0")
+                                </td>
+                                <td style="background:#843c0c;color:#ffe600;font-size:1.1rem">
+                                    @judgeSessionsReport.GrandTotals.GrandTotalJudgmentsCount.ToString("N0")
+                                </td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </div>
+        }
+    }
+
+    @* ================================= TAB: التقرير الشهري العام ================================= *@
+    @if (activeTab == "period" && periodReport is not null)
+    {
+        <div class="stats-grid mb-4">
+            <div class="stat-card">
+                <div class="stat-card-icon primary">📦</div>
+                <div>
+                    <div class="stat-card-value">@periodReport.TotalOpening</div>
+                    <div class="stat-card-label">الرصيد الافتتاحي</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-icon secondary">📥</div>
+                <div>
+                    <div class="stat-card-value">@periodReport.TotalIncoming</div>
+                    <div class="stat-card-label">إجمالي الوارد</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-icon primary">🗂️</div>
+                <div>
+                    <div class="stat-card-value">@periodReport.TotalAvailable</div>
+                    <div class="stat-card-label">المتاح للتصرف</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-icon success">⚖️</div>
+                <div>
+                    <div class="stat-card-value">@periodReport.TotalJudgments</div>
+                    <div class="stat-card-label">الأحكام الصادرة</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-icon warning">⏳</div>
+                <div>
+                    <div class="stat-card-value">@periodReport.TotalDeferred</div>
+                    <div class="stat-card-label">التأجيلات</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-icon accent">🔒</div>
+                <div>
+                    <div class="stat-card-value">@periodReport.TotalClosing</div>
+                    <div class="stat-card-label">الرصيد المتبقي</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-icon success">📈</div>
+                <div>
+                    <div class="stat-card-value">@periodReport.OverallCompletionRate%</div>
+                    <div class="stat-card-label">نسبة الإنجاز العامة</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">تفصيل حركة القضايا حسب النوع — @periodReport.PeriodNameAr</span>
+            </div>
+            <div class="card-body" style="padding:0">
+                <div class="table-wrapper" style="border:none">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>نوع القضية</th>
+                                <th style="text-align:center">الافتتاحي</th>
+                                <th style="text-align:center">الوارد</th>
+                                <th style="text-align:center">المتاح للتصرف</th>
+                                <th style="text-align:center">الأحكام</th>
+                                <th style="text-align:center">المؤجل</th>
+                                <th style="text-align:center">الرصيد الختامي</th>
+                                <th style="text-align:center">نسبة الفصل</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @if (periodReport.CaseTypeSummaries.Count == 0)
+                            {
+                                <tr>
+                                    <td colspan="8" style="text-align:center;padding:2rem;color:var(--text-muted)">
+                                        لا توجد إحصائيات معتمدة لهذه الفترة بعد.
+                                    </td>
+                                </tr>
+                            }
+                            else
+                            {
+                                @foreach (var row in periodReport.CaseTypeSummaries)
+                                {
+                                    <tr>
+                                        <td class="fw-semibold">@row.CaseTypeNameAr</td>
+                                        <td style="text-align:center">@row.OpeningCount</td>
+                                        <td style="text-align:center">@row.IncomingCount</td>
+                                        <td style="text-align:center" class="fw-semibold">@row.TotalAvailable</td>
+                                        <td style="text-align:center" class="text-success-color fw-bold">@row.JudgmentCount</td>
+                                        <td style="text-align:center">@row.DeferredCount</td>
+                                        <td style="text-align:center" class="fw-bold">@row.ClosingCount</td>
+                                        <td style="text-align:center">
+                                            <span class="badge @(row.CompletionRatePercent >= 50 ? "badge-success" : "badge-warning")">
+                                                @row.CompletionRatePercent%
+                                            </span>
+                                        </td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* ================================= TAB 3: التقرير السنوي التراكمي ================================= *@
+    @if (activeTab == "annual" && annualReport is not null)
+    {
+        <div class="stats-grid mb-4">
+            <div class="stat-card">
+                <div class="stat-card-icon primary">📅</div>
+                <div>
+                    <div class="stat-card-value">@annualReport.JudicialYearNameAr</div>
+                    <div class="stat-card-label">العام القضائي</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-icon secondary">🏢</div>
+                <div>
+                    <div class="stat-card-value">@annualReport.TotalSessionsHeld</div>
+                    <div class="stat-card-label">عدد الجلسات المنعقدة</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-icon success">⚖️</div>
+                <div>
+                    <div class="stat-card-value">@annualReport.TotalJudgmentsIssued</div>
+                    <div class="stat-card-label">إجمالي الأحكام الصادرة</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-icon accent">📈</div>
+                <div>
+                    <div class="stat-card-value">@annualReport.AnnualCompletionRate%</div>
+                    <div class="stat-card-label">معدل الفصل السنوي</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">إجمالي العام القضائي حسب نوع القضية</span>
+            </div>
+            <div class="card-body" style="padding:0">
+                <div class="table-wrapper" style="border:none">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>نوع القضية</th>
+                                <th style="text-align:center">إجمالي الوارد السنوي</th>
+                                <th style="text-align:center">إجمالي الأحكام الصادرة</th>
+                                <th style="text-align:center">المتبقي المتراكم</th>
+                                <th style="text-align:center">معدل الإنجاز</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @if (annualReport.CaseTypeAnnualTotals.Count == 0)
+                            {
+                                <tr>
+                                    <td colspan="5" style="text-align:center;padding:2rem;color:var(--text-muted)">
+                                        لا توجد بيانات مسجلة لهذا العام بعد.
+                                    </td>
+                                </tr>
+                            }
+                            else
+                            {
+                                @foreach (var r in annualReport.CaseTypeAnnualTotals)
+                                {
+                                    <tr>
+                                        <td class="fw-semibold">@r.CaseTypeNameAr</td>
+                                        <td style="text-align:center">@r.IncomingCount</td>
+                                        <td style="text-align:center" class="text-success-color fw-bold">@r.JudgmentCount</td>
+                                        <td style="text-align:center">@r.ClosingCount</td>
+                                        <td style="text-align:center">
+                                            <span class="badge @(r.CompletionRatePercent >= 50 ? "badge-success" : "badge-warning")">
+                                                @r.CompletionRatePercent%
+                                            </span>
+                                        </td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    }
+
+}
+
+@code {
+    private string activeTab = "rankings";
+    private bool isLoading = true;
+    private bool isRankingLoading = false;
+    private bool isInventoryLoading = false;
+    private bool isJudgeSessionsLoading = false;
+    private bool isExporting = false;
+    private string? exportMessage;
+
+    private List<JudicialYearDto>? years;
+    private List<StatisticalPeriodDto>? periods;
+    private List<CourtUnitDto>? courts;
+    private List<JudgeDto>? judgesList;
+
+    private long? selectedYearId;
+    private long? selectedPeriodId;
+    private long? selectedCourtId;
+
+    // كشف الترتيب القضائي
+    private string selectedReportType = "CivilFull";
+    private string periodSelectionMode = "single"; // single | range | all
+    private long? rangeStartPeriodId;
+    private long? rangeEndPeriodId;
+    private bool deductSuspendedInMisdemeanors = true;
+
+    // كشف الجرد الشهري
+    private long? selectedBasePeriodId;
+    private MonthlyInventoryReportDto? inventoryReport;
+
+    // كشف أحكام وإنجاز قاضٍ محدد بالجلسات
+    private long? selectedJudgeId;
+    private long? selectedJudgeCourtId;
+    private long? selectedJudgeCircuitId;
+    private string judgeSearchQuery = string.Empty;
+    private bool showFinalBreakdown = false;
+    private List<CircuitDto>? judgeCircuits;
+    private List<CircuitJudgeAssignmentDto>? yearAssignments;
+    private JudgeSessionJudgmentsReportDto? judgeSessionsReport;
+
+    private CircuitRankingReportDto? rankingReport;
+    private PeriodReportSummaryDto? periodReport;
+    private AnnualReportSummaryDto? annualReport;
+    private List<JudgePerformanceDto>? judgesPerformance;
+
+    protected override async Task OnInitializedAsync()
+    {
+        years = await YearsService.GetYearsAsync();
+        courts = await CourtsService.GetFlatAsync(true);
+        judgesList = await OrgService.GetJudgesAsync(activeOnly: true);
+
+        if (years.Count > 0)
+        {
+            var active = years.FirstOrDefault(y => y.Status == "Active") ?? years.First();
+            selectedYearId = active.Id;
+            periods = await YearsService.GetPeriodsForYearAsync(selectedYearId.Value);
+            judgeCircuits = await OrgService.GetCircuitsAsync(selectedYearId.Value);
+            yearAssignments = await OrgService.GetAssignmentsForYearAsync(selectedYearId.Value);
+
+            if (periods.Count > 0)
+            {
+                selectedPeriodId = periods.First().Id;
+                selectedBasePeriodId = periods.First().Id;
+                rangeStartPeriodId = periods.First().Id;
+                rangeEndPeriodId = periods.Last().Id;
+            }
+
+            await LoadDataAsync();
+        }
+        else
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task SetTab(string tab)
+    {
+        activeTab = (tab == "judges") ? "judge_sessions" : tab;
+        exportMessage = null;
+        if (activeTab == "judge_sessions")
+        {
+            periodSelectionMode = "range";
+        }
+        await LoadDataAsync();
+    }
+
+    private async Task OnYearChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var yId))
+        {
+            selectedYearId = yId;
+            periods = await YearsService.GetPeriodsForYearAsync(yId);
+            judgeCircuits = await OrgService.GetCircuitsAsync(yId, selectedJudgeCourtId);
+            yearAssignments = await OrgService.GetAssignmentsForYearAsync(yId);
+            if (periods.Count > 0)
+            {
+                selectedPeriodId = periods.First().Id;
+                selectedBasePeriodId = periods.First().Id;
+                rangeStartPeriodId = periods.First().Id;
+                rangeEndPeriodId = periods.Last().Id;
+            }
+            await LoadDataAsync();
+        }
+    }
+
+    private async Task OnJudgeCourtChanged(ChangeEventArgs e)
+    {
+        selectedJudgeCourtId = long.TryParse(e.Value?.ToString(), out var cId) ? cId : null;
+        selectedJudgeCircuitId = null;
+        if (selectedYearId.HasValue)
+        {
+            judgeCircuits = await OrgService.GetCircuitsAsync(selectedYearId.Value, selectedJudgeCourtId);
+        }
+        var filtered = GetFilteredJudges().ToList();
+        if (selectedJudgeId.HasValue && !filtered.Any(j => j.Id == selectedJudgeId.Value))
+        {
+            selectedJudgeId = null;
+        }
+        await LoadJudgeSessionsReportAsync();
+    }
+
+    private async Task OnJudgeCircuitChanged(ChangeEventArgs e)
+    {
+        selectedJudgeCircuitId = long.TryParse(e.Value?.ToString(), out var cId) ? cId : null;
+        var filtered = GetFilteredJudges().ToList();
+        if (selectedJudgeId.HasValue && !filtered.Any(j => j.Id == selectedJudgeId.Value))
+        {
+            selectedJudgeId = null;
+        }
+        else if (!selectedJudgeId.HasValue && filtered.Count == 1)
+        {
+            selectedJudgeId = filtered.First().Id;
+        }
+        await LoadJudgeSessionsReportAsync();
+    }
+
+    private IEnumerable<JudgeDto> GetFilteredJudges()
+    {
+        if (judgesList is null) return Enumerable.Empty<JudgeDto>();
+
+        var query = judgesList.AsEnumerable();
+
+        if (selectedJudgeCircuitId.HasValue && yearAssignments is not null)
+        {
+            var judgeIdsInCircuit = yearAssignments
+                .Where(a => a.CircuitId == selectedJudgeCircuitId.Value)
+                .Select(a => a.JudgeId)
+                .ToHashSet();
+
+            query = query.Where(j => judgeIdsInCircuit.Contains(j.Id));
+        }
+        else if (selectedJudgeCourtId.HasValue && judgeCircuits is not null && yearAssignments is not null)
+        {
+            var circuitIdsInCourt = judgeCircuits
+                .Where(c => c.CourtUnitId == selectedJudgeCourtId.Value)
+                .Select(c => c.Id)
+                .ToHashSet();
+
+            var judgeIdsInCourt = yearAssignments
+                .Where(a => circuitIdsInCourt.Contains(a.CircuitId))
+                .Select(a => a.JudgeId)
+                .ToHashSet();
+
+            query = query.Where(j => judgeIdsInCourt.Contains(j.Id) || j.CreatedCourtUnitId == selectedJudgeCourtId.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(judgeSearchQuery))
+        {
+            var q = judgeSearchQuery.Trim();
+            query = query.Where(j => j.FullNameAr.Contains(q, StringComparison.OrdinalIgnoreCase) || j.Code.Contains(q, StringComparison.OrdinalIgnoreCase));
+        }
+
+        return query;
+    }
+
+    private async Task SelectJudge(long judgeId)
+    {
+        selectedJudgeId = judgeId;
+        await LoadJudgeSessionsReportAsync();
+    }
+
+    private async Task OnBasePeriodChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var pId))
+        {
+            selectedBasePeriodId = pId;
+            await LoadMonthlyInventoryReportAsync();
+        }
+    }
+
+    private async Task OnJudgeChanged(ChangeEventArgs e)
+    {
+        selectedJudgeId = long.TryParse(e.Value?.ToString(), out var jId) ? jId : null;
+        await LoadJudgeSessionsReportAsync();
+    }
+
+    private async Task OnReportTypeChanged(ChangeEventArgs e)
+    {
+        selectedReportType = e.Value?.ToString() ?? "CivilFull";
+        await LoadRankingReportAsync();
+    }
+
+    private async Task OnPeriodModeChanged(ChangeEventArgs e)
+    {
+        periodSelectionMode = e.Value?.ToString() ?? "single";
+        if (activeTab == "judge_sessions")
+            await LoadJudgeSessionsReportAsync();
+        else
+            await LoadRankingReportAsync();
+    }
+
+    private async Task OnSinglePeriodChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var pId))
+        {
+            selectedPeriodId = pId;
+            if (activeTab == "judge_sessions")
+                await LoadJudgeSessionsReportAsync();
+            else
+                await LoadRankingReportAsync();
+        }
+    }
+
+    private async Task OnRangeStartChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var pId))
+        {
+            rangeStartPeriodId = pId;
+            if (activeTab == "judge_sessions")
+                await LoadJudgeSessionsReportAsync();
+            else
+                await LoadRankingReportAsync();
+        }
+    }
+
+    private async Task OnRangeEndChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var pId))
+        {
+            rangeEndPeriodId = pId;
+            if (activeTab == "judge_sessions")
+                await LoadJudgeSessionsReportAsync();
+            else
+                await LoadRankingReportAsync();
+        }
+    }
+
+    private async Task OnPeriodChanged(ChangeEventArgs e)
+    {
+        selectedPeriodId = long.TryParse(e.Value?.ToString(), out var pId) ? pId : null;
+        await LoadGeneralReportsAsync();
+    }
+
+    private async Task OnCourtChanged(ChangeEventArgs e)
+    {
+        selectedCourtId = long.TryParse(e.Value?.ToString(), out var cId) ? cId : null;
+        await LoadDataAsync();
+    }
+
+    private async Task ToggleDeductSuspended()
+    {
+        deductSuspendedInMisdemeanors = !deductSuspendedInMisdemeanors;
+        await LoadRankingReportAsync();
+    }
+
+    private async Task LoadDataAsync()
+    {
+        if (activeTab == "rankings")
+        {
+            await LoadRankingReportAsync();
+        }
+        else if (activeTab == "inventory")
+        {
+            await LoadMonthlyInventoryReportAsync();
+        }
+        else if (activeTab == "judge_sessions")
+        {
+            await LoadJudgeSessionsReportAsync();
+        }
+        else
+        {
+            await LoadGeneralReportsAsync();
+        }
+    }
+
+    private async Task LoadRankingReportAsync()
+    {
+        if (!selectedYearId.HasValue || periods is null || periods.Count == 0) return;
+
+        isRankingLoading = true;
+        try
+        {
+            var targetPeriodIds = GetSelectedPeriodIds();
+            var filter = new CircuitRankingFilter(
+                selectedYearId.Value,
+                targetPeriodIds,
+                selectedReportType,
+                selectedCourtId,
+                deductSuspendedInMisdemeanors
+            );
+
+            rankingReport = await ReportsService.GetCircuitRankingReportAsync(filter);
+        }
+        catch (Exception ex)
+        {
+            exportMessage = "حدث خطأ أثناء تحميل كشف الترتيب: " + ex.Message;
+        }
+        finally
+        {
+            isRankingLoading = false;
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadMonthlyInventoryReportAsync()
+    {
+        if (!selectedYearId.HasValue || !selectedBasePeriodId.HasValue) return;
+
+        isInventoryLoading = true;
+        try
+        {
+            var filter = new MonthlyInventoryFilter(
+                selectedYearId.Value,
+                selectedBasePeriodId.Value,
+                selectedCourtId
+            );
+            inventoryReport = await ReportsService.GetMonthlyInventoryReportAsync(filter);
+        }
+        catch (Exception ex)
+        {
+            exportMessage = "حدث خطأ أثناء تحميل كشف الجرد الشهري: " + ex.Message;
+        }
+        finally
+        {
+            isInventoryLoading = false;
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadJudgeSessionsReportAsync()
+    {
+        if (!selectedJudgeId.HasValue || !selectedYearId.HasValue)
+        {
+            judgeSessionsReport = null;
+            return;
+        }
+
+        isJudgeSessionsLoading = true;
+        try
+        {
+            var targetPeriodIds = GetSelectedPeriodIds();
+            var filter = new JudgeSessionJudgmentsFilter(
+                selectedJudgeId.Value,
+                selectedYearId.Value,
+                targetPeriodIds,
+                selectedJudgeCourtId ?? selectedCourtId
+            );
+            judgeSessionsReport = await ReportsService.GetJudgeSessionJudgmentsReportAsync(filter);
+        }
+        catch (Exception ex)
+        {
+            exportMessage = "حدث خطأ أثناء تحميل أحكام السيد القاضي: " + ex.Message;
+        }
+        finally
+        {
+            isJudgeSessionsLoading = false;
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadGeneralReportsAsync()
+    {
+        isLoading = true;
+        try
+        {
+            periodReport = await ReportsService.GetPeriodReportAsync(selectedCourtId, selectedPeriodId);
+            if (selectedYearId.HasValue)
+            {
+                annualReport = await ReportsService.GetAnnualReportAsync(selectedYearId.Value, selectedCourtId);
+                judgesPerformance = await ReportsService.GetJudgesPerformanceAsync(selectedYearId.Value, selectedPeriodId);
+            }
+        }
+        catch (Exception ex)
+        {
+            exportMessage = "حدث خطأ أثناء تحميل التقارير: " + ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private List<long> GetSelectedPeriodIds()
+    {
+        if (periods is null || periods.Count == 0) return [];
+
+        if (periodSelectionMode == "single")
+        {
+            var pid = selectedPeriodId ?? periods.First().Id;
+            return [pid];
+        }
+        else if (periodSelectionMode == "range")
+        {
+            var startIdx = rangeStartPeriodId.HasValue ? periods.FindIndex(p => p.Id == rangeStartPeriodId.Value) : 0;
+            var endIdx = rangeEndPeriodId.HasValue ? periods.FindIndex(p => p.Id == rangeEndPeriodId.Value) : periods.Count - 1;
+            if (startIdx < 0) startIdx = 0;
+            if (endIdx < 0) endIdx = periods.Count - 1;
+            if (startIdx > endIdx) (startIdx, endIdx) = (endIdx, startIdx);
+            return periods.Skip(startIdx).Take(endIdx - startIdx + 1).Select(p => p.Id).ToList();
+        }
+        else // all
+        {
+            return periods.Select(p => p.Id).ToList();
+        }
+    }
+
+    private async Task ExportToExcelAsync()
+    {
+        if (!selectedYearId.HasValue || periods is null || periods.Count == 0) return;
+
+        isExporting = true;
+        exportMessage = null;
+        try
+        {
+            var targetPeriodIds = GetSelectedPeriodIds();
+            var filter = new CircuitRankingFilter(
+                selectedYearId.Value,
+                targetPeriodIds,
+                selectedReportType,
+                selectedCourtId,
+                deductSuspendedInMisdemeanors
+            );
+
+            var fileBytes = await ReportsService.ExportCircuitRankingToExcelAsync(filter);
+            var fileName = $"تقرير_ترتيب_{selectedReportType}_{DateTime.Now:yyyyMMdd_HHmm}.xlsx";
+            var base64 = Convert.ToBase64String(fileBytes);
+            await JSRuntime.InvokeVoidAsync("downloadFileFromBase64", fileName, base64, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            exportMessage = "تم تصدير ملف الإكسل بنجاح وحفظه على جهازك.";
+        }
+        catch (Exception ex)
+        {
+            exportMessage = "فشل تصدير ملف الإكسل: " + ex.Message;
+        }
+        finally
+        {
+            isExporting = false;
+        }
+    }
+
+    private async Task ExportInventoryToExcelAsync()
+    {
+        if (!selectedYearId.HasValue || !selectedBasePeriodId.HasValue) return;
+
+        isExporting = true;
+        exportMessage = null;
+        try
+        {
+            var filter = new MonthlyInventoryFilter(
+                selectedYearId.Value,
+                selectedBasePeriodId.Value,
+                selectedCourtId
+            );
+
+            var fileBytes = await ReportsService.ExportMonthlyInventoryToExcelAsync(filter);
+            var baseName = inventoryReport?.BasePeriodNameAr?.Replace(" ", "_") ?? "شهر";
+            var fileName = $"كشف_الجرد_الشهري_بعد_إيداع_{baseName}_{DateTime.Now:yyyyMMdd_HHmm}.xlsx";
+            var base64 = Convert.ToBase64String(fileBytes);
+            await JSRuntime.InvokeVoidAsync("downloadFileFromBase64", fileName, base64, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            exportMessage = "تم تصدير كشف الجرد الشهري إلى Excel بنجاح.";
+        }
+        catch (Exception ex)
+        {
+            exportMessage = "فشل تصدير كشف الجرد: " + ex.Message;
+        }
+        finally
+        {
+            isExporting = false;
+        }
+    }
+
+    private async Task ExportJudgeSessionsToExcelAsync()
+    {
+        if (!selectedJudgeId.HasValue || !selectedYearId.HasValue) return;
+
+        isExporting = true;
+        exportMessage = null;
+        try
+        {
+            var targetPeriodIds = GetSelectedPeriodIds();
+            var filter = new JudgeSessionJudgmentsFilter(
+                selectedJudgeId.Value,
+                selectedYearId.Value,
+                targetPeriodIds,
+                selectedJudgeCourtId ?? selectedCourtId
+            );
+
+            var fileBytes = await ReportsService.ExportJudgeSessionJudgmentsToExcelAsync(filter);
+            var judgeName = judgeSessionsReport?.JudgeFullNameAr?.Replace(" ", "_") ?? "القاضي";
+            var fileName = $"تقرير_إنجاز_وأحكام_القاضي_{judgeName}_{DateTime.Now:yyyyMMdd_HHmm}.xlsx";
+            var base64 = Convert.ToBase64String(fileBytes);
+            await JSRuntime.InvokeVoidAsync("downloadFileFromBase64", fileName, base64, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            exportMessage = "تم تصدير تقرير إنجاز وأحكام السيد القاضي إلى Excel بنجاح.";
+        }
+        catch (Exception ex)
+        {
+            exportMessage = "فشل تصدير أحكام القاضي: " + ex.Message;
+        }
+        finally
+        {
+            isExporting = false;
+        }
+    }
+
+    private async Task PrintReportAsync()
+    {
+        await JSRuntime.InvokeVoidAsync("window.print");
+    }
+}
+
+<style>
+@@media print {
+    /* إخفاء عناصر التحكم والأزرار والشريط الجانبي */
+    .page-header, .tabs, .card.d-print-none, .sidebar, .navbar, .btn, .alert, header, nav {
+        display: none !important;
+    }
+    body, .main-content, .container-fluid, .content {
+        background: #ffffff !important;
+        color: #000000 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        width: 100% !important;
+    }
+    .print-card-banner {
+        background: #f8f9fa !important;
+        color: #000000 !important;
+        border: 2px solid #333 !important;
+    }
+    .print-card-banner * {
+        color: #000000 !important;
+    }
+    .table {
+        border-collapse: collapse !important;
+        width: 100% !important;
+        font-size: 0.82rem !important;
+    }
+    .table th, .table td {
+        border: 1px solid #333 !important;
+        color: #000000 !important;
+        padding: 4px 6px !important;
+    }
+    .table thead th {
+        background: #e9ecef !important;
+        color: #000000 !important;
+    }
+    .table tfoot tr {
+        background: #dee2e6 !important;
+        color: #000000 !important;
+        font-weight: bold !important;
+    }
+}
+</style>

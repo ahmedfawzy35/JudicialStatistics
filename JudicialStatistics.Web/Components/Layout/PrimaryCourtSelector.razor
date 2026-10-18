@@ -1,0 +1,53 @@
+@rendermode InteractiveServer
+@inject JudicialStatistics.Web.Services.CurrentCourtState CourtState
+@implements IDisposable
+
+@if (CourtState.CanSwitchCourt)
+{
+    <div class="d-flex align-center gap-2 primary-court-selector">
+        <span style="font-size:1.2rem;" title="المحكمة الابتدائية">🏛️</span>
+        <select class="form-control form-control-sm"
+                style="font-weight:700;color:var(--brand-primary);min-width:180px;cursor:pointer;border-color:var(--brand-primary-light);"
+                value="@CourtState.SelectedPrimaryCourtId"
+                @onchange="OnPrimaryCourtChanged">
+            @foreach (var c in CourtState.AllowedPrimaryCourts)
+            {
+                <option value="@c.Id">@c.NameAr</option>
+            }
+        </select>
+        <span class="badge badge-info" style="font-size:0.75rem;">تغيير المحكمة</span>
+    </div>
+}
+else
+{
+    <div class="d-flex align-center gap-2" title="المحكمة الابتدائية المصرح بها">
+        <span style="font-size:1.2rem;">🏛️</span>
+        <span class="header-title">@CourtState.SelectedPrimaryCourtName</span>
+        <span class="badge badge-muted" style="font-size:0.7rem;">🔒 محكمة مسندة</span>
+    </div>
+}
+
+@code {
+    protected override void OnInitialized()
+    {
+        CourtState.OnChange += OnCourtStateChanged;
+    }
+
+    private void OnCourtStateChanged()
+    {
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void OnPrimaryCourtChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var courtId))
+        {
+            CourtState.SelectPrimaryCourt(courtId);
+        }
+    }
+
+    public void Dispose()
+    {
+        CourtState.OnChange -= OnCourtStateChanged;
+    }
+}

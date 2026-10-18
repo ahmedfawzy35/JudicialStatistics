@@ -1,0 +1,33 @@
+/* MainLayout scoped styles — غير مستخدمة الآن، التصميم الكامل في app.css */
+/* يمكن استخدامها لتجاوز تصميم الـ Layout في صفحات محددة */
+
+#blazor-error-ui {
+    display: none;
+    position: fixed;
+    bottom: 0;
+    right: 0;
+    left: 0;
+    z-index: 2000;
+    background: var(--brand-danger, #B13A3A);
+    color: #fff;
+    padding: .75rem 1.25rem;
+    font-family: 'Cairo', sans-serif;
+    font-size: .9rem;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    direction: rtl;
+}
+
+#blazor-error-ui .reload {
+    color: #fff;
+    font-weight: 700;
+    text-decoration: underline;
+}
+
+#blazor-error-ui .dismiss {
+    cursor: pointer;
+    opacity: .7;
+}
+
+#blazor-error-ui.hidden { display: none; }

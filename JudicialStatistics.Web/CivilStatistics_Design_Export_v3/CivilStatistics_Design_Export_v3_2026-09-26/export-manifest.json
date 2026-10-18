@@ -1,0 +1,53 @@
+{
+  "source_url": "https://civil-statistics-entry.ahmedfawzyph958.chatgpt.site/",
+  "published_version": 3,
+  "source_commit": "3c32efc0e3a64a0e044343045dc5d22564afa12d",
+  "export_date": "2026-09-26",
+  "portable_unchanged_source_files": [
+    "app/page.tsx",
+    "app/statistics.ts",
+    "app/globals.css",
+    "components/ui/tabs.tsx",
+    "components/ui/select.tsx",
+    "components/ui/table.tsx",
+    "components/ui/dialog.tsx",
+    "components/ui/alert-dialog.tsx",
+    "components/ui/button.tsx",
+    "lib/utils.ts",
+    "vendor/shadcn-tailwind-4.13.0.css",
+    "vendor/shadcn-tailwind-4.13.0.LICENSE.md",
+    "public/favicon.svg",
+    "postcss.config.mjs"
+  ],
+  "original_source": "All Git-tracked files at the published commit; no working-tree secrets or dependencies.",
+  "portable_runtime": "React + Vite; no Sites hosting, Cloudflare runtime, server, or database required.",
+  "package_versions": {
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "lucide-react": "1.31.0",
+    "radix-ui": "1.6.7",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "tailwind-merge": "3.6.0",
+    "vite": "8.0.13",
+    "@vitejs/plugin-react": "6.0.2",
+    "typescript": "5.9.3",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "tailwindcss": "4.2.1",
+    "@tailwindcss/postcss": "4.2.1",
+    "tw-animate-css": "1.4.0"
+  },
+  "verification": {
+    "all_original_files_identical": true,
+    "original_source_files": 106,
+    "portable_ui_unchanged_files": 14,
+    "typescript": "passed",
+    "build": "passed",
+    "static_http": "passed",
+    "shortening_smoke": "passed",
+    "browser_visual_test": "not_performed",
+    "clean_install": "not_completed"
+  }
+}

@@ -1,0 +1,1327 @@
+@page "/judge-movements"
+@rendermode InteractiveServer
+@inject IOrganizationService OrganizationService
+@inject ICourtsService CourtsService
+@inject IJudicialYearsService YearsService
+@inject JudicialStatistics.Web.Services.CurrentCourtState CourtState
+@inject NavigationManager Navigation
+
+<PageTitle>حركات وانتدابات وإجازات القضاة — الإحصاء القضائي</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📜 سجل حركات وانتدابات وإجازات القضاة</h1>
+        <p class="page-subtitle">
+            سجل تاريخي تدقيقي غير قابل للتعديل أو الحذف لقرارات الندب والنقل والإجازات مع توجيه الدوائر وتحديد العمل بالجلسة
+        </p>
+    </div>
+    <div class="page-actions d-flex align-center gap-2 flex-wrap">
+        <div class="d-flex align-center bg-light p-1 rounded border gap-1">
+            <span class="text-secondary" style="font-size:0.8rem;padding:0 4px">طريقة العرض:</span>
+            <button type="button" class="btn btn-xs @(formDisplayMode == "Inline" ? "btn-primary text-white" : "btn-light text-dark")"
+                    @onclick='() => SetDisplayMode("Inline")' style="font-size:0.8rem" title="عرض النموذج أعلى الشاشة قبل الحركات السابقة">
+                📄 أعلى الشاشة
+            </button>
+            <button type="button" class="btn btn-xs @(formDisplayMode == "Modal" ? "btn-primary text-white" : "btn-light text-dark")"
+                    @onclick='() => SetDisplayMode("Modal")' style="font-size:0.8rem" title="عرض النموذج في نافذة منبثقة">
+                🪟 نافذة منبثقة
+            </button>
+        </div>
+
+        <button class="btn @(isFormOpen ? "btn-secondary" : "btn-primary")" @onclick="ToggleForm">
+            @(isFormOpen ? "✕ إغلاق النموذج" : "➕ تسجيل قرار / حركة جديدة")
+        </button>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success") mb-4">
+        <span>@(isError ? "⚠️" : "✅") @statusMessage</span>
+    </div>
+}
+
+@* شريط التنبيه التدقيقي *@
+<div class="alert alert-info mb-4 d-flex align-center gap-2" style="background:rgba(30,144,255,0.08);border:1px solid rgba(30,144,255,0.3)">
+    <span style="font-size:1.4rem">🔒</span>
+    <div>
+        <strong>قيد أمني وتدقيقي وإجرائي:</strong>
+        كافة القرارات القضائية والحركات المسجلة هنا تحفظ بسجل تدقيق دائم وغير قابلة للتعديل أو الحذف. عند النقل أو الندب تتأثر دائرتان (المنقول منها والمنقول إليها) ويتم تعديل تشكيل الدائرة المنقول إليها مع القرار، ويسري القرار من تاريخه ويلغى أثر الندب تلقائياً بعد انقضاء مدته.
+    </div>
+</div>
+
+@* نموذج تسجيل حركة جديدة (وضع العرض: أعلى الشاشة قبل الحركات السابقة) *@
+@if (isFormOpen && formDisplayMode == "Inline")
+{
+    <div class="card mb-4 shadow-sm" style="border: 2px solid var(--brand-primary); background:#fff;">
+        <div class="card-header d-flex justify-between align-center flex-wrap gap-2" style="background: rgba(0, 123, 255, 0.06); padding: 0.85rem 1.25rem;">
+            <div class="d-flex align-center gap-2">
+                <span style="font-size:1.4rem">⚖️</span>
+                <div>
+                    <span class="card-title fw-bold" style="color:var(--brand-primary); font-size:1.1rem;">تسجيل حركة قضائية جديدة (نقل / ندب / إجازة)</span>
+                    <div class="text-secondary" style="font-size:0.8rem">إجراء التوجيه وضبط تشكيل الدائرة المنقول إليها وفق الخطوات المعتمدة</div>
+                </div>
+            </div>
+            <div class="d-flex align-center gap-2">
+                <button type="button" class="btn btn-sm btn-outline-primary" @onclick='() => SetDisplayMode("Modal")' title="تحويل النموذج إلى نافذة منبثقة">
+                    🪟 تحويل إلى نافذة منبثقة
+                </button>
+                <button type="button" class="btn btn-icon btn-outline-secondary" @onclick="CloseForm">✕</button>
+            </div>
+        </div>
+        <div class="card-body" style="padding: 1.25rem;">
+            @RenderFormBody()
+        </div>
+        <div class="card-footer d-flex justify-between" style="background:#f8f9fa; padding: 0.75rem 1.25rem; border-top: 1px solid rgba(0,0,0,0.1);">
+            <button class="btn btn-outline-secondary" @onclick="CloseForm">إلغاء</button>
+            <button class="btn btn-primary" @onclick="SaveMovement" disabled="@isSaving">
+                @(isSaving ? "جاري التسجيل..." : "🔒 تسجيل واعتماد القرار وتشكيل الدائرة")
+            </button>
+        </div>
+    </div>
+}
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-between align-center flex-wrap gap-2">
+        <span class="card-title">سجل القرارات والحركات (@filteredMovements.Count قرار)</span>
+        <div class="d-flex align-center gap-2 flex-wrap">
+            <input type="text" class="form-control form-control-sm" placeholder="🔍 بحث بالقاضي، رقم القرار، أو السبب..."
+                   style="min-width: 250px;"
+                   @bind="searchTerm" @bind:event="oninput" />
+
+            <select class="form-control form-control-sm" value="@selectedYearId" @onchange="OnYearFilterChanged" style="min-width: 140px;">
+                @if (yearsList is not null)
+                {
+                    @foreach (var y in yearsList)
+                    {
+                        <option value="@y.Id">@y.NameAr @(y.Status == "Active" ? "(نشط)" : "")</option>
+                    }
+                }
+            </select>
+
+            <select class="form-control form-control-sm" @bind="selectedTypeFilter" style="min-width: 150px;">
+                <option value="">كل أنواع القرارات</option>
+                <option value="Delegation">ندب قضائي</option>
+                <option value="Transfer">نقل قضائي</option>
+                <option value="Leave">إجازة اعتيادية</option>
+                <option value="SickLeave">إجازة مرضية</option>
+                <option value="SpecialLeave">إجازة خاصة</option>
+            </select>
+        </div>
+    </div>
+    <div class="card-body" style="padding:0">
+        @if (isLoading)
+        {
+            <div style="padding:2rem" class="d-flex align-center justify-center gap-2">
+                <div class="spinner"></div>
+                <span>جاري تحميل سجل القرارات والحركات...</span>
+            </div>
+        }
+        else if (filteredMovements.Count == 0)
+        {
+            <div style="padding:2rem;text-align:center" class="text-muted-color">
+                لا توجد قرارات أو حركات قضائية مسجلة حتى الآن.
+            </div>
+        }
+        else
+        {
+            <div class="table-wrapper" style="border:none">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th style="width:130px">رقم القرار</th>
+                            <th style="width:100px">تاريخ القرار</th>
+                            <th>اسم القاضي</th>
+                            <th>نوع الحركة</th>
+                            <th>التوجيه والدوائر المعنية</th>
+                            <th>عمله بالجلسة</th>
+                            <th>فترة السريان</th>
+                            <th>سبب القرار</th>
+                            <th style="width:120px;text-align:center">التشكيل بالقرار</th>
+                            <th style="width:100px;text-align:center">الأثر الحالي</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var m in filteredMovements)
+                        {
+                            var today = DateOnly.FromDateTime(DateTime.Today);
+                            var isCurrent = m.EffectiveFrom <= today && (!m.EffectiveTo.HasValue || m.EffectiveTo.Value >= today);
+
+                            <tr>
+                                <td class="fw-semibold">@m.DecisionNumber</td>
+                                <td>@m.DecisionDate.ToString("yyyy/MM/dd")</td>
+                                <td class="fw-bold" style="color:var(--brand-primary)">@m.JudgeNameAr</td>
+                                <td>
+                                    <span class="badge @GetBadgeClass(m.MovementType)">
+                                        @GetMovementTypeNameAr(m.MovementType)
+                                    </span>
+                                </td>
+                                <td>
+                                    @if (m.MovementType is "Transfer" or "Delegation")
+                                    {
+                                        <div style="font-size:0.85rem;line-height:1.4">
+                                            <div><span class="text-secondary">من:</span> <strong>@(m.FromCircuitNameAr ?? "دائرته الأصلية")</strong></div>
+                                            <div><span class="text-primary">إلى:</span> <strong>@(m.ToCircuitNameAr ?? m.CircuitNameAr ?? "دائرة مستهدفة")</strong></div>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <div style="font-size:0.85rem">
+                                            <span>الدائرة:</span> <strong>@(m.FromCircuitNameAr ?? m.CircuitNameAr ?? "عام بالمحكمة")</strong>
+                                        </div>
+                                    }
+                                </td>
+                                <td>
+                                    @if (!string.IsNullOrEmpty(m.JudicialRoleNameAr))
+                                    {
+                                        <span class="badge badge-primary" style="font-size:0.8rem">
+                                            @m.JudicialRoleNameAr
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-muted-color">—</span>
+                                    }
+                                </td>
+                                <td>
+                                    <span style="font-size:0.85rem">
+                                        من: @m.EffectiveFrom.ToString("yyyy/MM/dd")
+                                        @if (m.EffectiveTo.HasValue)
+                                        {
+                                            <br /><span>إلى: @m.EffectiveTo.Value.ToString("yyyy/MM/dd")</span>
+                                        }
+                                        else
+                                        {
+                                            <br /><span class="text-muted-color">(نهاية العام القضائي)</span>
+                                        }
+                                    </span>
+                                </td>
+                                <td style="max-width:180px;white-space:normal;font-size:0.85rem">
+                                    @m.Reason
+                                    @if (!string.IsNullOrWhiteSpace(m.Notes))
+                                    {
+                                        <div class="text-secondary" style="font-size:0.75rem">ملاحظة: @m.Notes</div>
+                                    }
+                                </td>
+                                <td style="text-align:center">
+                                    @if (!string.IsNullOrEmpty(m.FromCircuitOrderJson) || !string.IsNullOrEmpty(m.ToCircuitOrderJson))
+                                    {
+                                        <button class="btn btn-xs btn-outline-primary" style="font-size:0.75rem"
+                                                @onclick="() => OpenViewFormationModal(m)">
+                                            👁️ استعراض
+                                        </button>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-muted-color" style="font-size:0.75rem">تلقائي</span>
+                                    }
+                                </td>
+                                <td style="text-align:center">
+                                    @if (isCurrent)
+                                    {
+                                        <span class="badge badge-warning" style="background:#ffc107;color:#000">ساري الأثر</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="badge badge-muted">منتهي</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+</div>
+
+@* نموذج تسجيل حركة جديدة (وضع العرض: نافذة منبثقة) *@
+@if (isFormOpen && formDisplayMode == "Modal")
+{
+    <div class="modal-overlay" @onclick="CloseForm">
+        <div class="modal-card" style="max-width: 880px;max-height:92vh;overflow-y:auto;" @onclick:stopPropagation>
+            <div class="modal-header d-flex justify-between align-center">
+                <div class="d-flex align-center gap-2">
+                    <span style="font-size:1.3rem">⚖️</span>
+                    <div>
+                        <span class="modal-title">تسجيل حركة قضائية جديدة (نقل / ندب / إجازة)</span>
+                        <div class="text-secondary" style="font-size:0.8rem">إجراء التوجيه وضبط تشكيل الدائرة المنقول إليها وفق الخطوات المعتمدة</div>
+                    </div>
+                </div>
+                <div class="d-flex align-center gap-2">
+                    <button type="button" class="btn btn-sm btn-outline-primary" @onclick='() => SetDisplayMode("Inline")' title="تثبيت أعلى الشاشة بدلاً من النافذة المنبثقة">
+                        📄 تثبيت أعلى الشاشة
+                    </button>
+                    <button class="btn btn-icon btn-outline-secondary" @onclick="CloseForm">✕</button>
+                </div>
+            </div>
+            <div class="modal-body">
+                @RenderFormBody()
+            </div>
+            <div class="modal-footer d-flex justify-between">
+                <button class="btn btn-outline-secondary" @onclick="CloseForm">إلغاء</button>
+                <button class="btn btn-primary" @onclick="SaveMovement" disabled="@isSaving">
+                    @(isSaving ? "جاري التسجيل..." : "🔒 تسجيل واعتماد القرار وتشكيل الدائرة")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@* مودال استعراض التشكيل المعتمد بالقرار *@
+@if (showViewFormationModal && selectedViewMovement != null)
+{
+    <div class="modal-overlay" @onclick="CloseViewFormationModal">
+        <div class="modal-card" style="max-width: 650px;" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">👁️ التشكيل المعتمد المصاحب للقرار: @selectedViewMovement.DecisionNumber</span>
+                <button class="btn btn-icon btn-outline-secondary" @onclick="CloseViewFormationModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3 p-2 bg-light rounded border">
+                    <div><strong>القاضي المعني:</strong> @selectedViewMovement.JudgeNameAr</div>
+                    <div><strong>نوع القرار:</strong> @GetMovementTypeNameAr(selectedViewMovement.MovementType)</div>
+                    <div><strong>تاريخ القرار:</strong> @selectedViewMovement.DecisionDate.ToString("yyyy/MM/dd")</div>
+                    <div><strong>السريان:</strong> من @selectedViewMovement.EffectiveFrom.ToString("yyyy/MM/dd") @(selectedViewMovement.EffectiveTo.HasValue ? $"إلى {selectedViewMovement.EffectiveTo.Value:yyyy/MM/dd}" : "(حتى نهاية العام)")</div>
+                    <div><strong>السبب:</strong> @selectedViewMovement.Reason</div>
+                </div>
+
+                @if (viewFromJudges.Count > 0)
+                {
+                    <h4 style="font-size:1rem;color:var(--brand-primary);margin-top:1rem;margin-bottom:0.5rem">
+                        📋 تشكيل الدائرة @(selectedViewMovement.MovementType is "Transfer" or "Delegation" ? "المنقول منها" : "المعنية"): @(selectedViewMovement.FromCircuitNameAr ?? selectedViewMovement.CircuitNameAr)
+                    </h4>
+                    <div class="table-wrapper mb-3" style="border:none">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th style="width:50px">#</th>
+                                    <th>اسم القاضي</th>
+                                    <th>الصفة القضائية بالتشكيل</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var j in viewFromJudges)
+                                {
+                                    <tr>
+                                        <td><span class="badge badge-primary">@j.DisplayOrder</span></td>
+                                        <td class="fw-bold">@j.JudgeNameAr</td>
+                                        <td>@j.JudicialRoleNameAr</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+
+                @if (viewToJudges.Count > 0)
+                {
+                    <h4 style="font-size:1rem;color:#28a745;margin-top:1rem;margin-bottom:0.5rem">
+                        📋 تشكيل الدائرة المنقول إليها: @(selectedViewMovement.ToCircuitNameAr ?? selectedViewMovement.CircuitNameAr)
+                    </h4>
+                    <div class="table-wrapper mb-3" style="border:none">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th style="width:50px">#</th>
+                                    <th>اسم القاضي</th>
+                                    <th>الصفة القضائية بالتشكيل</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var j in viewToJudges)
+                                {
+                                    bool isTargetJudge = j.JudgeId == selectedViewMovement.JudgeId;
+                                    <tr class="@(isTargetJudge ? "table-success" : "")">
+                                        <td><span class="badge @(isTargetJudge ? "badge-success" : "badge-primary")">@j.DisplayOrder</span></td>
+                                        <td class="fw-bold">
+                                            @j.JudgeNameAr
+                                            @if (isTargetJudge)
+                                            {
+                                                <span class="badge badge-success ms-1">القاضي الموجه</span>
+                                            }
+                                        </td>
+                                        <td>@j.JudicialRoleNameAr</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" @onclick="CloseViewFormationModal">إغلاق</button>
+            </div>
+        </div>
+    </div>
+}
+
+<style>
+    .wizard-step {
+        background: #fff;
+        border-color: rgba(0,0,0,0.12) !important;
+        transition: box-shadow 0.2s ease;
+    }
+    .wizard-step:hover {
+        box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+    }
+    .step-num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: var(--brand-primary);
+        color: #fff;
+        font-size: 0.8rem;
+        font-weight: bold;
+    }
+    .step-title {
+        font-size: 0.95rem;
+    }
+    .bg-light-green {
+        background-color: rgba(40, 167, 69, 0.08) !important;
+    }
+    .bg-light-card {
+        background-color: rgba(0, 123, 255, 0.02) !important;
+    }
+    .formation-item {
+        transition: background-color 0.15s ease;
+    }
+    .formation-item:hover {
+        background-color: var(--surface-hover) !important;
+    }
+</style>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    [SupplyParameterFromQuery]
+    public long? CircuitId { get; set; }
+
+    [SupplyParameterFromQuery]
+    public long? JudgeId { get; set; }
+
+    private long currentUserId = 1;
+    private long selectedYearId = 0;
+    private List<JudicialYearDto>? yearsList;
+
+    private List<JudgeMovementDto> allMovements = new();
+    private List<CircuitDto> circuitsList = new();
+    private List<JudicialStatistics.Application.Courts.CourtUnitDto> courtsList = new();
+    private List<JudicialRoleDto> rolesList = new();
+
+    private bool isLoading = true;
+    private bool isSaving = false;
+    private string? statusMessage;
+    private bool isError;
+    private string? modalError;
+
+    // Filters on the main table
+    private string searchTerm = "";
+    private string selectedTypeFilter = "";
+
+    // Form state (Inline vs Modal)
+    private bool isFormOpen = false;
+    private string formDisplayMode = "Inline"; // "Inline" or "Modal"
+    private bool showAddModal => isFormOpen && formDisplayMode == "Modal";
+    private string newMovementType = "Transfer";
+    private string newDecisionNumber = "";
+    private DateOnly newDecisionDate = DateOnly.FromDateTime(DateTime.Today);
+    private DateOnly newEffectiveFrom = DateOnly.FromDateTime(DateTime.Today);
+    private DateOnly? newEffectiveTo;
+    private string newReason = "";
+    private string newNotes = "";
+
+    // Step 2 & 3: Source Circuit & Judge
+    private long sourceCourtId = 0;
+    private string newFromCircuitId = "";
+    private string newJudgeId = "";
+    private List<CircuitJudgeOrderItem> sourceCircuitJudges = new();
+    private bool isLoadingSourceJudges = false;
+
+    // Step 4: Destination Circuit
+    private long targetCourtId = 0;
+    private string newToCircuitId = "";
+    private string newJudicialRoleId = "";
+
+    // Step 6: Destination Circuit Formation Reordering
+    private List<CircuitJudgeOrderItem> toCircuitJudges = new();
+
+    // View Modal State
+    private bool showViewFormationModal = false;
+    private JudgeMovementDto? selectedViewMovement;
+    private List<CircuitJudgeOrderItem> viewFromJudges = new();
+    private List<CircuitJudgeOrderItem> viewToJudges = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+
+        if (CircuitId.HasValue || JudgeId.HasValue)
+        {
+            OpenForm(formDisplayMode);
+            if (CircuitId.HasValue)
+            {
+                var match = circuitsList.FirstOrDefault(c => c.Id == CircuitId.Value);
+                if (match != null)
+                {
+                    sourceCourtId = match.CourtUnitId;
+                }
+                newFromCircuitId = CircuitId.Value.ToString();
+                await LoadSourceCircuitJudgesAsync();
+            }
+            if (JudgeId.HasValue)
+            {
+                newJudgeId = JudgeId.Value.ToString();
+            }
+        }
+    }
+
+    private async Task OnYearFilterChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var yId))
+        {
+            selectedYearId = yId;
+            await LoadDataAsync();
+        }
+    }
+
+    private async Task LoadDataAsync()
+    {
+        isLoading = true;
+        try
+        {
+            if (AuthState != null)
+            {
+                var auth = await AuthState;
+                if (auth.User.Identity?.IsAuthenticated == true)
+                {
+                    await CourtState.EnsureInitializedAsync(auth.User);
+                    if (CourtState.CurrentAppUserId > 0)
+                    {
+                        currentUserId = CourtState.CurrentAppUserId;
+                    }
+                }
+            }
+
+            try
+            {
+                yearsList = await YearsService.GetYearsAsync();
+                if (selectedYearId == 0)
+                {
+                    var activeYear = yearsList.FirstOrDefault(y => y.Status == "Active") ?? yearsList.FirstOrDefault();
+                    if (activeYear != null) selectedYearId = activeYear.Id;
+                }
+            }
+            catch
+            {
+                selectedYearId = 1;
+            }
+
+            allMovements = await OrganizationService.GetJudgeMovementsAsync(judicialYearId: selectedYearId, userId: currentUserId);
+            rolesList = await OrganizationService.GetJudicialRolesAsync();
+            courtsList = await CourtsService.GetFlatAsync(true);
+
+            if (CourtState.SelectedPrimaryCourtId > 0)
+            {
+                circuitsList = await OrganizationService.GetCircuitsAsync(selectedYearId, CourtState.SelectedPrimaryCourtId, currentUserId);
+            }
+            else
+            {
+                circuitsList = await OrganizationService.GetCircuitsAsync(selectedYearId, null, currentUserId);
+            }
+
+            if (circuitsList.Count == 0)
+            {
+                circuitsList = await OrganizationService.GetCircuitsAsync(selectedYearId, null, currentUserId);
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"خطأ في تحميل الحركات القضائية: {ex.Message}";
+            isError = true;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private List<JudgeMovementDto> filteredMovements
+    {
+        get
+        {
+            var query = allMovements.AsEnumerable();
+
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var term = searchTerm.Trim();
+                query = query.Where(m => m.JudgeNameAr.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                                         m.DecisionNumber.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                                         m.Reason.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                                         (m.CircuitNameAr != null && m.CircuitNameAr.Contains(term, StringComparison.OrdinalIgnoreCase)) ||
+                                         (m.FromCircuitNameAr != null && m.FromCircuitNameAr.Contains(term, StringComparison.OrdinalIgnoreCase)) ||
+                                         (m.ToCircuitNameAr != null && m.ToCircuitNameAr.Contains(term, StringComparison.OrdinalIgnoreCase)));
+            }
+
+            if (!string.IsNullOrWhiteSpace(selectedTypeFilter))
+            {
+                query = query.Where(m => m.MovementType.Equals(selectedTypeFilter, StringComparison.OrdinalIgnoreCase));
+            }
+
+            return query.ToList();
+        }
+    }
+
+    private List<JudicialStatistics.Application.Courts.CourtUnitDto> availableCourts
+    {
+        get
+        {
+            var courtsWithCircuits = courtsList
+                .Where(c => circuitsList.Any(cir => cir.CourtUnitId == c.Id))
+                .OrderBy(c => c.UnitKind == "PlenaryHeadquarters" ? 1 :
+                              c.UnitKind == "SummaryCourt" ? 2 :
+                              c.UnitKind == "FamilyCourt" ? 3 :
+                              c.UnitKind == "LaborCourt" ? 4 : 5)
+                .ThenBy(c => c.NameAr)
+                .ToList();
+
+            if (courtsWithCircuits.Count > 0)
+                return courtsWithCircuits;
+
+            return courtsList
+                .Where(c => c.IsActive && c.ParentCourtUnitId != null)
+                .OrderBy(c => c.NameAr)
+                .ToList();
+        }
+    }
+
+    private List<CircuitDto> filteredSourceCircuits
+    {
+        get
+        {
+            if (sourceCourtId <= 0) return new();
+            return circuitsList
+                .Where(c => c.CourtUnitId == sourceCourtId)
+                .OrderBy(c => c.Code)
+                .ToList();
+        }
+    }
+
+    private List<CircuitDto> filteredTargetCircuits
+    {
+        get
+        {
+            if (targetCourtId <= 0) return new();
+
+            var q = circuitsList.Where(c => c.CourtUnitId == targetCourtId);
+
+            if (long.TryParse(newFromCircuitId, out var fromCid) && fromCid > 0)
+            {
+                q = q.Where(c => c.Id != fromCid);
+            }
+
+            return q.OrderBy(c => c.Code).ToList();
+        }
+    }
+
+    private string GetMovementTypeNameAr(string type) => type switch
+    {
+        "Delegation" => "ندب قضائي",
+        "Transfer" => "نقل قضائي",
+        "Leave" => "إجازة اعتيادية",
+        "SickLeave" => "إجازة مرضية",
+        "SpecialLeave" => "إجازة خاصة",
+        _ => type
+    };
+
+    private string GetBadgeClass(string type) => type switch
+    {
+        "Delegation" => "badge-info",
+        "Transfer" => "badge-primary",
+        "Leave" => "badge-warning",
+        "SickLeave" => "badge-danger",
+        "SpecialLeave" => "badge-warning",
+        _ => "badge-muted"
+    };
+
+    private string GetCircuitName(string circuitIdStr)
+    {
+        if (long.TryParse(circuitIdStr, out var cid))
+        {
+            var c = circuitsList.FirstOrDefault(x => x.Id == cid);
+            return c != null ? $"{c.NameAr} ({c.Code})" : "";
+        }
+        return "";
+    }
+
+    private string GetCourtKindAr(string kind) => kind switch
+    {
+        "PrimaryCourt" or "Court" => "محكمة ابتدائية",
+        "HQCourt" or "PlenaryHeadquarters" => "مأمورية كلية",
+        "SummaryCourt" => "محكمة جزئية",
+        "FamilyCourt" => "محكمة أسرة",
+        "LaborCourt" => "محكمة عمال",
+        _ => kind
+    };
+
+    private void SetMovementType(string type)
+    {
+        newMovementType = type;
+        if (newMovementType is not ("Transfer" or "Delegation"))
+        {
+            newToCircuitId = "";
+            toCircuitJudges.Clear();
+        }
+    }
+
+    private void ToggleForm()
+    {
+        if (isFormOpen)
+        {
+            CloseForm();
+        }
+        else
+        {
+            OpenForm(formDisplayMode);
+        }
+    }
+
+    private void SetDisplayMode(string mode)
+    {
+        formDisplayMode = mode;
+        if (!isFormOpen)
+        {
+            OpenForm(mode);
+        }
+    }
+
+    private void OpenForm(string mode)
+    {
+        formDisplayMode = mode;
+        newJudgeId = "";
+        sourceCourtId = 0;
+        newFromCircuitId = "";
+        targetCourtId = 0;
+        newToCircuitId = "";
+        newJudicialRoleId = "";
+        newMovementType = "Transfer";
+        newDecisionNumber = "";
+        newDecisionDate = DateOnly.FromDateTime(DateTime.Today);
+        newEffectiveFrom = DateOnly.FromDateTime(DateTime.Today);
+        newEffectiveTo = null;
+        newReason = "";
+        newNotes = "";
+        modalError = null;
+        sourceCircuitJudges.Clear();
+        toCircuitJudges.Clear();
+        isFormOpen = true;
+    }
+
+    private void CloseForm() => isFormOpen = false;
+
+    private void OpenAddModal() => OpenForm("Modal");
+    private void CloseAddModal() => CloseForm();
+
+    // Step 2: Source Court & Circuit
+    private void OnSourceCourtChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var cid))
+        {
+            sourceCourtId = cid;
+        }
+        else
+        {
+            sourceCourtId = 0;
+        }
+        newFromCircuitId = "";
+        newJudgeId = "";
+        sourceCircuitJudges.Clear();
+        modalError = null;
+
+        if (targetCourtId > 0 && !string.IsNullOrEmpty(newToCircuitId))
+        {
+            _ = ProposeToCircuitFormationAsync();
+        }
+    }
+
+    private async Task OnFromCircuitSelected(ChangeEventArgs e)
+    {
+        newFromCircuitId = e.Value?.ToString() ?? "";
+        newJudgeId = "";
+        sourceCircuitJudges.Clear();
+        modalError = null;
+
+        if (!string.IsNullOrEmpty(newFromCircuitId))
+        {
+            await LoadSourceCircuitJudgesAsync();
+        }
+
+        if (!string.IsNullOrEmpty(newToCircuitId) && newToCircuitId == newFromCircuitId)
+        {
+            newToCircuitId = "";
+            toCircuitJudges.Clear();
+        }
+        else if (!string.IsNullOrEmpty(newToCircuitId))
+        {
+            await ProposeToCircuitFormationAsync();
+        }
+    }
+
+    private async Task LoadSourceCircuitJudgesAsync()
+    {
+        sourceCircuitJudges.Clear();
+        if (long.TryParse(newFromCircuitId, out var cid) && cid > 0)
+        {
+            isLoadingSourceJudges = true;
+            try
+            {
+                sourceCircuitJudges = await OrganizationService.GetCircuitCurrentJudgesForMovementAsync(cid);
+                // Auto-select if single judge
+                if (sourceCircuitJudges.Count == 1)
+                {
+                    newJudgeId = sourceCircuitJudges[0].JudgeId.ToString();
+                    await ProposeToCircuitFormationAsync();
+                }
+            }
+            finally
+            {
+                isLoadingSourceJudges = false;
+            }
+        }
+    }
+
+    // Step 3: Judge selected
+    private async Task OnJudgeSelected(ChangeEventArgs e)
+    {
+        newJudgeId = e.Value?.ToString() ?? "";
+        if (newMovementType is "Transfer" or "Delegation")
+        {
+            await ProposeToCircuitFormationAsync();
+        }
+    }
+
+    // Step 4: Destination Court & Circuit
+    private void OnTargetCourtChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var cid))
+        {
+            targetCourtId = cid;
+        }
+        else
+        {
+            targetCourtId = 0;
+        }
+        newToCircuitId = "";
+        toCircuitJudges.Clear();
+        modalError = null;
+    }
+
+    private async Task OnToCircuitSelected(ChangeEventArgs e)
+    {
+        newToCircuitId = e.Value?.ToString() ?? "";
+        modalError = null;
+        await ProposeToCircuitFormationAsync();
+    }
+
+    private async Task OnJudicialRoleSelected(ChangeEventArgs e)
+    {
+        newJudicialRoleId = e.Value?.ToString() ?? "";
+        await ProposeToCircuitFormationAsync();
+    }
+
+    // Step 6: Destination Circuit Formation Builder
+    private async Task ProposeToCircuitFormationAsync()
+    {
+        if (!long.TryParse(newToCircuitId, out var cid) || cid <= 0)
+        {
+            toCircuitJudges.Clear();
+            return;
+        }
+
+        var baseJudges = await OrganizationService.GetCircuitCurrentJudgesForMovementAsync(cid);
+        long.TryParse(newJudgeId, out var movingJudgeId);
+        long.TryParse(newJudicialRoleId, out var roleId);
+
+        var movingJudgeItem = sourceCircuitJudges.FirstOrDefault(j => j.JudgeId == movingJudgeId);
+        var role = rolesList.FirstOrDefault(r => r.Id == roleId);
+
+        var list = new List<CircuitJudgeOrderItem>();
+
+        foreach (var j in baseJudges.Where(x => x.JudgeId != movingJudgeId))
+        {
+            list.Add(j);
+        }
+
+        if (movingJudgeItem != null)
+        {
+            var targetRole = role ?? rolesList.FirstOrDefault(r => r.Code == "MEMBER_RIGHT") ?? rolesList.FirstOrDefault();
+            var incomingItem = new CircuitJudgeOrderItem(
+                movingJudgeItem.JudgeId,
+                movingJudgeItem.JudgeNameAr,
+                targetRole?.Id ?? 1,
+                targetRole?.NameAr ?? "عضو",
+                (short)(list.Count + 1)
+            );
+
+            if (targetRole != null && targetRole.Code == "CHIEF")
+            {
+                list.Insert(0, incomingItem);
+            }
+            else
+            {
+                list.Add(incomingItem);
+            }
+        }
+
+        ReindexList(list);
+        toCircuitJudges = list;
+    }
+
+    private void MoveJudgeUp(List<CircuitJudgeOrderItem> list, int index)
+    {
+        if (index <= 0 || index >= list.Count) return;
+        var temp = list[index];
+        list[index] = list[index - 1];
+        list[index - 1] = temp;
+        ReindexList(list);
+    }
+
+    private void MoveJudgeDown(List<CircuitJudgeOrderItem> list, int index)
+    {
+        if (index < 0 || index >= list.Count - 1) return;
+        var temp = list[index];
+        list[index] = list[index + 1];
+        list[index + 1] = temp;
+        ReindexList(list);
+    }
+
+    private void UpdateJudgeRole(List<CircuitJudgeOrderItem> list, int index, ChangeEventArgs e)
+    {
+        if (index >= 0 && index < list.Count && long.TryParse(e.Value?.ToString(), out var roleId))
+        {
+            var role = rolesList.FirstOrDefault(r => r.Id == roleId);
+            if (role != null)
+            {
+                list[index] = list[index] with { JudicialRoleId = role.Id, JudicialRoleNameAr = role.NameAr };
+            }
+        }
+    }
+
+    private void ReindexList(List<CircuitJudgeOrderItem> list)
+    {
+        short order = 1;
+        for (int i = 0; i < list.Count; i++)
+        {
+            list[i] = list[i] with { DisplayOrder = order++ };
+        }
+    }
+
+    private void OpenViewFormationModal(JudgeMovementDto m)
+    {
+        selectedViewMovement = m;
+        viewFromJudges = ParseJudgesJson(m.FromCircuitOrderJson);
+        viewToJudges = ParseJudgesJson(m.ToCircuitOrderJson);
+        showViewFormationModal = true;
+    }
+
+    private void CloseViewFormationModal()
+    {
+        showViewFormationModal = false;
+        selectedViewMovement = null;
+        viewFromJudges.Clear();
+        viewToJudges.Clear();
+    }
+
+    private List<CircuitJudgeOrderItem> ParseJudgesJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new();
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<List<CircuitJudgeOrderItem>>(json) ?? new();
+        }
+        catch
+        {
+            return new();
+        }
+    }
+
+    private async Task SaveMovement()
+    {
+        if (string.IsNullOrWhiteSpace(newDecisionNumber))
+        {
+            modalError = "يرجى إدخال رقم أو مرجع القرار (الخطوة 1).";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(newReason))
+        {
+            modalError = "يرجى إدخال سبب النقل أو الندب أو الإجازة (الخطوة 1).";
+            return;
+        }
+
+        if (sourceCourtId <= 0 || string.IsNullOrWhiteSpace(newFromCircuitId))
+        {
+            modalError = "يرجى اختيار المحكمة والدائرة المصدر (الخطوة 2).";
+            return;
+        }
+
+        if (!long.TryParse(newJudgeId, out var judgeId) || judgeId <= 0)
+        {
+            modalError = "يرجى اختيار القاضي المعني بالقرار من بين قضاة الدائرة (الخطوة 3).";
+            return;
+        }
+
+        if (newMovementType is "Transfer" or "Delegation")
+        {
+            if (targetCourtId <= 0 || string.IsNullOrWhiteSpace(newToCircuitId))
+            {
+                modalError = "يرجى اختيار المحكمة والدائرة المنتدب أو المنقول إليها (الخطوة 4).";
+                return;
+            }
+            if (newFromCircuitId == newToCircuitId)
+            {
+                modalError = "لا يمكن أن تكون الدائرة المصدر هي نفسها الدائرة المستهدفة للنقل أو الندب.";
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(newJudicialRoleId))
+            {
+                modalError = "يرجى تحديد عمل القاضي بالجلسة / الصفة القضائية بالدائرة الجديدة (الخطوة 4).";
+                return;
+            }
+            if (newMovementType == "Delegation" && !newEffectiveTo.HasValue)
+            {
+                modalError = "في قرارات الندب، يجب تحديد تاريخ نهاية السريان لإلغاء أثر الندب تلقائياً بعدها (الخطوة 5).";
+                return;
+            }
+        }
+
+        if (newEffectiveTo.HasValue && newEffectiveTo.Value < newEffectiveFrom)
+        {
+            modalError = "تاريخ نهاية السريان لا يمكن أن يكون قبل تاريخ بداية السريان.";
+            return;
+        }
+
+        isSaving = true;
+        modalError = null;
+
+        try
+        {
+            long? fromCid = long.TryParse(newFromCircuitId, out var fc) && fc > 0 ? fc : null;
+            long? toCid = long.TryParse(newToCircuitId, out var tc) && tc > 0 ? tc : null;
+            long? roleId = long.TryParse(newJudicialRoleId, out var r) && r > 0 ? r : null;
+
+            await OrganizationService.CreateJudgeMovementAsync(new JudgeMovementCreateCommand(
+                judgeId,
+                toCid ?? fromCid,
+                fromCid,
+                toCid,
+                roleId,
+                newMovementType,
+                newDecisionNumber.Trim(),
+                newDecisionDate,
+                newEffectiveFrom,
+                newEffectiveTo,
+                newReason.Trim(),
+                string.IsNullOrWhiteSpace(newNotes) ? null : newNotes.Trim(),
+                FromCircuitJudges: null, // لا يتم تعديل الترتيب للدائرة المنقول منها هنا (يقوم النظام بالصعود التلقائي)
+                ToCircuitJudges: toCircuitJudges // يتم تعديل وضبط ترتيب الدائرة المنقول إليها
+            ));
+
+            isFormOpen = false;
+            statusMessage = "تم تسجيل القرار القضائي بنجاح وتحديث تشكيل الدائرة المنقول إليها وصعود قضاة الدائرة المنقول منها تلقائياً.";
+            isError = false;
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            modalError = ex.Message;
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private RenderFragment RenderFormBody() => __builder =>
+    {
+        @if (!string.IsNullOrEmpty(modalError))
+        {
+            <div class="alert alert-danger mb-3">⚠️ @modalError</div>
+        }
+
+        @* اختيار نوع الحركة أعلى النموذج *@
+        <div class="movement-type-selector mb-3 p-2 bg-light border rounded d-flex justify-between align-center flex-wrap gap-2">
+            <label class="fw-bold mb-0">نوع الإجراء / الحركة القضائية:</label>
+            <div class="d-flex gap-2">
+                <button type="button" class="btn btn-sm @(newMovementType == "Transfer" ? "btn-primary" : "btn-outline-primary")"
+                        @onclick='() => SetMovementType("Transfer")'>
+                    🔄 نقل قضائي
+                </button>
+                <button type="button" class="btn btn-sm @(newMovementType == "Delegation" ? "btn-info text-white" : "btn-outline-info")"
+                        @onclick='() => SetMovementType("Delegation")'>
+                    ⏱️ ندب قضائي
+                </button>
+                <button type="button" class="btn btn-sm @(newMovementType.Contains("Leave") ? "btn-warning text-dark" : "btn-outline-warning")"
+                        @onclick='() => SetMovementType("Leave")'>
+                    🌴 إجازة
+                </button>
+            </div>
+        </div>
+
+        @* الخطوة 1: تحديد بداية سريان القرار ومعلومات القرار *@
+        <div class="wizard-step mb-3 p-3 border rounded">
+            <div class="step-header d-flex align-center gap-2 mb-2">
+                <span class="step-num">1</span>
+                <strong class="step-title">تحديد بداية سريان القرار وتفاصيل القرار</strong>
+            </div>
+            <div class="row" style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+                <div class="form-group">
+                    <label class="form-label text-primary fw-bold">تاريخ بداية سريان القرار *</label>
+                    <input type="date" class="form-control" @bind="newEffectiveFrom" />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">تاريخ صدور القرار *</label>
+                    <input type="date" class="form-control" @bind="newDecisionDate" />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">رقم القرار / المرجع النصي *</label>
+                    <input type="text" class="form-control" @bind="newDecisionNumber" placeholder="مثال: قرار وزير العدل 412 لسنة 2025" />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">سبب النقل / الندب / الإجازة *</label>
+                    <input type="text" class="form-control" @bind="newReason" placeholder="مثال: سد العجز / ندب مؤقت / ظروف صحية" />
+                </div>
+            </div>
+        </div>
+
+        @* الخطوة 2: تحديد الدائرة التي يتم الندب منها أو النقل أو الإجازة (فيظهر القضاة العاملين بها) *@
+        <div class="wizard-step mb-3 p-3 border rounded">
+            <div class="step-header d-flex align-center gap-2 mb-2">
+                <span class="step-num">2</span>
+                <strong class="step-title">تحديد الدائرة المصدر (المنقول / المنتدب منها أو دائرة الإجازة)</strong>
+            </div>
+            <div class="row" style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+                <div class="form-group mb-2">
+                    <label class="form-label fw-bold">1. المحكمة / المأمورية (المصدر) *</label>
+                    <select class="form-control" value="@sourceCourtId" @onchange="OnSourceCourtChanged">
+                        <option value="0">-- اختر المحكمة أولاً --</option>
+                        @foreach (var court in availableCourts)
+                        {
+                            <option value="@court.Id">@court.NameAr (@GetCourtKindAr(court.UnitKind))</option>
+                        }
+                    </select>
+                </div>
+                <div class="form-group mb-2">
+                    <label class="form-label fw-bold">2. الدائرة المصدر (منها) *</label>
+                    <select class="form-control" value="@newFromCircuitId" @onchange="OnFromCircuitSelected" disabled="@(sourceCourtId <= 0)">
+                        <option value="">@(sourceCourtId <= 0 ? "-- يرجى اختيار المحكمة أولاً --" : $"-- اختر الدائرة ({filteredSourceCircuits.Count} دائرة متاحة) --")</option>
+                        @foreach (var c in filteredSourceCircuits)
+                        {
+                            <option value="@c.Id">@c.NameAr (@c.Code)</option>
+                        }
+                    </select>
+                </div>
+            </div>
+
+            @* إظهار القضاة العاملين بها فور الاختيار *@
+            @if (isLoadingSourceJudges)
+            {
+                <div class="text-secondary p-2" style="font-size:0.85rem">⏳ جاري جلب القضاة العاملين بالدائرة...</div>
+            }
+            else if (sourceCircuitJudges.Count > 0)
+            {
+                <div class="mt-2 p-2 rounded" style="background:rgba(0,123,255,0.06);border:1px dashed rgba(0,123,255,0.3)">
+                    <div class="d-flex align-center gap-2 mb-1">
+                        <span style="font-size:0.9rem">👨‍⚖️</span>
+                        <strong style="font-size:0.85rem;color:var(--brand-primary)">القضاة العاملين بالدائرة حالياً (@(sourceCircuitJudges.Count) قضاة):</strong>
+                    </div>
+                    <div class="d-flex flex-wrap gap-2">
+                        @foreach (var j in sourceCircuitJudges)
+                        {
+                            <span class="badge @(j.JudgeId.ToString() == newJudgeId ? "badge-primary" : "badge-secondary")" style="font-size:0.8rem;padding:4px 8px">
+                                #@j.DisplayOrder @j.JudgeNameAr (@j.JudicialRoleNameAr)
+                            </span>
+                        }
+                    </div>
+                </div>
+            }
+            else if (!string.IsNullOrEmpty(newFromCircuitId))
+            {
+                <div class="text-muted-color p-2" style="font-size:0.85rem">لم يتم العثور على قضاة مسجلين لهذه الدائرة حتى الآن.</div>
+            }
+        </div>
+
+        @* الخطوة 3: اختيار القاضي المعني *@
+        <div class="wizard-step mb-3 p-3 border rounded">
+            <div class="step-header d-flex align-center gap-2 mb-2">
+                <span class="step-num">3</span>
+                <strong class="step-title">اختيار القاضي المعني بالقرار</strong>
+            </div>
+            <div class="form-group mb-0">
+                <label class="form-label">القاضي المعني (من بين قضاة الدائرة المختارة) *</label>
+                <select class="form-control" value="@newJudgeId" @onchange="OnJudgeSelected" disabled="@(sourceCircuitJudges.Count == 0)">
+                    <option value="">-- اختر القاضي المعني --</option>
+                    @foreach (var j in sourceCircuitJudges)
+                    {
+                        <option value="@j.JudgeId">@j.JudgeNameAr — @j.JudicialRoleNameAr</option>
+                    }
+                </select>
+                @if (sourceCircuitJudges.Count == 0 && !string.IsNullOrEmpty(newFromCircuitId))
+                {
+                    <small class="text-danger">لا يوجد قضاة في الدائرة لاختيارهم.</small>
+                }
+            </div>
+        </div>
+
+        @* الخطوة 4: (في النقل والندب) اختيار الدائرة المنتدب أو المنقول إليها عبر اختيار المحكمة ثم الدائرة *@
+        @if (newMovementType is "Transfer" or "Delegation")
+        {
+            <div class="wizard-step mb-3 p-3 border rounded bg-light-card">
+                <div class="step-header d-flex align-center gap-2 mb-2">
+                    <span class="step-num">4</span>
+                    <strong class="step-title">اختيار الدائرة المنتدب أو المنقول إليها وتحديد العمل بالجلسة</strong>
+                </div>
+                <div class="row" style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+                    @* 4.1 اختيار المحكمة المستهدفة *@
+                    <div class="form-group">
+                        <label class="form-label fw-bold">1. المحكمة / المأمورية المستهدفة *</label>
+                        <select class="form-control" value="@targetCourtId" @onchange="OnTargetCourtChanged">
+                            <option value="0">-- اختر المحكمة المستهدفة --</option>
+                            @foreach (var court in availableCourts)
+                            {
+                                <option value="@court.Id">@court.NameAr (@GetCourtKindAr(court.UnitKind))</option>
+                            }
+                        </select>
+                    </div>
+
+                    @* 4.2 الدائرة المنتدب أو المنقول إليها *@
+                    <div class="form-group">
+                        <label class="form-label text-success fw-bold">2. الدائرة المنتدب / المنقول إليها *</label>
+                        <select class="form-control" value="@newToCircuitId" @onchange="OnToCircuitSelected" disabled="@(targetCourtId <= 0)">
+                            <option value="">@(targetCourtId <= 0 ? "-- يرجى اختيار المحكمة أولاً --" : $"-- اختر الدائرة المستهدفة ({filteredTargetCircuits.Count} دائرة متاحة) --")</option>
+                            @foreach (var c in filteredTargetCircuits)
+                            {
+                                <option value="@c.Id">@c.NameAr (@c.Code)</option>
+                            }
+                        </select>
+                    </div>
+
+                    @* 4.3 عمل القاضي بالجلسة (الصفة القضائية بالتشكيل الجديد) *@
+                    <div class="form-group" style="grid-column: span 2;">
+                        <label class="form-label text-success fw-bold">3. عمل القاضي بالجلسة (الصفة القضائية بالدائرة الجديدة) *</label>
+                        <select class="form-control" value="@newJudicialRoleId" @onchange="OnJudicialRoleSelected">
+                            <option value="">-- اختر الصفة بالدائرة الجديدة (رئيس محكمة / عضو يمين / عضو يسار...) --</option>
+                            @foreach (var r in rolesList)
+                            {
+                                <option value="@r.Id">@r.NameAr</option>
+                            }
+                        </select>
+                    </div>
+                </div>
+            </div>
+        }
+
+        @* الخطوة 5: تحديد نهاية سريان القرار *@
+        <div class="wizard-step mb-3 p-3 border rounded">
+            <div class="step-header d-flex align-center gap-2 mb-2">
+                <span class="step-num">5</span>
+                <strong class="step-title">تحديد نهاية سريان القرار</strong>
+            </div>
+            <div class="form-group mb-1">
+                <label class="form-label">
+                    تاريخ نهاية سريان القرار
+                    @(newMovementType == "Delegation" ? "(إلزامي في الندب لإلغاء أثره تلقائياً بعدها) *" : "(اختياري — إذا تُرك فارغاً يسري لنهاية العام)")
+                </label>
+                <input type="date" class="form-control" @bind="newEffectiveTo" />
+            </div>
+            @if (newMovementType == "Delegation")
+            {
+                <div class="text-info mt-1" style="font-size:0.8rem">
+                    ⏱️ <strong>قاعدة الندب:</strong> ينتهي أثر هذا القرار تلقائياً بمجرد حلول هذا التاريخ، ويعود التشكيل السابق للدائرتين تلقائياً.
+                </div>
+            }
+            else if (newMovementType == "Transfer")
+            {
+                <div class="text-secondary mt-1" style="font-size:0.8rem">
+                    🔄 <strong>قاعدة النقل:</strong> سارٍ من بداية سريان القرار حتى نهاية العام القضائي.
+                </div>
+            }
+        </div>
+
+        @* الخطوة 6: تعديل ترتيب الدائرة المنقول إليها (أما المنقول منها لا يتم تعديل الترتيب هنا) *@
+        @if (newMovementType is "Transfer" or "Delegation")
+        {
+            <div class="wizard-step mb-3 p-3 border rounded" style="border-color:#28a745 !important;">
+                <div class="step-header d-flex justify-between align-center mb-2">
+                    <div class="d-flex align-center gap-2">
+                        <span class="step-num" style="background:#28a745">6</span>
+                        <strong class="step-title" style="color:#28a745">
+                            تعديل ترتيب الدائرة المنقول إليها: @(GetCircuitName(newToCircuitId))
+                        </strong>
+                    </div>
+                    <span class="badge badge-success">@(toCircuitJudges.Count) قضاة بالتشكيل</span>
+                </div>
+
+                <p class="text-secondary mb-2" style="font-size:0.85rem">
+                    تم إدراج القاضي المنقول/المنتدب بالصفة المحددة. يمكنك تعديل ترتيب القضاة صعوداً وهبوطاً وتعديل الصفة القضائية لأي قاضٍ في الدائرة المنقول إليها:
+                </p>
+
+                @if (toCircuitJudges.Count == 0)
+                {
+                    <div class="p-3 text-center text-muted-color bg-light rounded">
+                        يرجى اختيار الدائرة المنقول إليها في الخطوة 4 لإظهار وضبط تشكيل قضاتها.
+                    </div>
+                }
+                else
+                {
+                    <div class="formation-reorder-list">
+                        @for (int i = 0; i < toCircuitJudges.Count; i++)
+                        {
+                            var idx = i;
+                            var item = toCircuitJudges[idx];
+                            bool isIncoming = long.TryParse(newJudgeId, out var jid) && item.JudgeId == jid;
+
+                            <div class="formation-item d-flex align-center justify-between gap-2 p-2 mb-1 border rounded @(isIncoming ? "border-success bg-light-green" : "")" style="background:#fff">
+                                <div class="d-flex align-center gap-2">
+                                    <span class="badge @(isIncoming ? "badge-success" : "badge-primary")" style="min-width:32px;text-align:center">#@(item.DisplayOrder)</span>
+                                    <span class="fw-bold">@item.JudgeNameAr</span>
+                                    @if (isIncoming)
+                                    {
+                                        <span class="badge badge-success" style="font-size:0.7rem">⭐ القاضي المنقول / المنتدب</span>
+                                    }
+                                </div>
+                                <div class="d-flex align-center gap-2">
+                                    <select class="form-control form-control-sm" style="min-width:140px"
+                                            value="@item.JudicialRoleId"
+                                            @onchange="(e) => UpdateJudgeRole(toCircuitJudges, idx, e)">
+                                        @foreach (var r in rolesList)
+                                        {
+                                            <option value="@r.Id">@r.NameAr</option>
+                                        }
+                                    </select>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(idx == 0)"
+                                            @onclick="() => MoveJudgeUp(toCircuitJudges, idx)" title="تحريك لأعلى">⬆️</button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(idx == toCircuitJudges.Count - 1)"
+                                            @onclick="() => MoveJudgeDown(toCircuitJudges, idx)" title="تحريك لأسفل">⬇️</button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+
+                <div class="mt-2 p-2 rounded bg-light border text-muted-color" style="font-size:0.8rem">
+                    💡 <strong>ملاحظة هامة:</strong> الدائرة المنقول منها (@GetCircuitName(newFromCircuitId)) لا يتم تعديل ترتيبها يدوياً هنا، بل سيقوم النظام آلياً باستبعاد القاضي منها وصعود القضاة المتبقين فور اعتماد القرار.
+                </div>
+            </div>
+        }
+
+        @* ملاحظات إضافية اختياري *@
+        <div class="form-group mb-2">
+            <label class="form-label">ملاحظات إضافية (اختياري)</label>
+            <textarea class="form-control" rows="2" @bind="newNotes" placeholder="أي مستندات أو تفاصيل إضافية..."></textarea>
+        </div>
+    };
+}

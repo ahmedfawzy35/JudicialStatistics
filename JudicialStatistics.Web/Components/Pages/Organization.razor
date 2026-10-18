@@ -1,0 +1,3608 @@
+@page "/organization"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using Microsoft.AspNetCore.Authorization
+@inject IOrganizationService OrgService
+@inject IRulesService RulesService
+@inject IJudicialYearsService YearsService
+@inject ICourtsService CourtsService
+@inject IServiceScopeFactory ScopeFactory
+@inject JudicialStatistics.Web.Services.CurrentCourtState CourtState
+@inject JudicialStatistics.Application.Import.IFormationExportService FormationExportService
+@inject IJSRuntime JSRuntime
+
+<PageTitle>التشكيل وتوزيع العمل القضائي — الإحصاء القضائي</PageTitle>
+
+<div class="page-header mb-4">
+    <div>
+        <h1 class="page-title">🗂️ التشكيل وتوزيع العمل القضائي</h1>
+        <p class="page-subtitle">استعراض وإدارة الدوائر، الجلسات، تشكيل القضاة، وقرارات الندب والنقل</p>
+    </div>
+    <div class="page-actions d-flex gap-2">
+        <button class="btn btn-outline-success" @onclick="ExportFormationSheet" disabled="@isExportingFormation" title="تصدير شيت التشكيل الموحد كملف إكسل مطابق للنموذج">
+            <span>📊</span> @(isExportingFormation ? "جاري التصدير..." : "تصدير شيت التشكيل")
+        </button>
+        @if (activeTab == "circuits")
+        {
+            <button class="btn btn-primary" @onclick="OpenAddCircuitModal">➕ إضافة دائرة جديدة</button>
+        }
+        else if (activeTab == "sessions")
+        {
+            <button class="btn btn-primary" @onclick="OpenAddSessionModal">➕ إضافة جلسة جديدة</button>
+        }
+        else if (activeTab == "judges")
+        {
+            <button class="btn btn-primary" @onclick="OpenAddJudgeModal">➕ إضافة قاضٍ جديد</button>
+        }
+        else if (activeTab == "employees")
+        {
+            <button class="btn btn-primary" @onclick="OpenAddEmployeeModal">➕ إضافة موظف جديد</button>
+        }
+        else if (activeTab == "assignments")
+        {
+            <button class="btn btn-primary" @onclick="OpenAssignJudgeModal">➕ تكليف قاضٍ بدائرة</button>
+        }
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success") mb-4">
+        <span>@(isError ? "⚠️" : "✅") @statusMessage</span>
+    </div>
+}
+
+@* تبويبات التشكيل *@
+<div class="tabs mb-4">
+    <button class="tab @(activeTab == "formation-view" ? "active" : "")" @onclick='() => SetTab("formation-view")'>
+        🔍 استعراض تشكيل الدوائر وتوزيع القضاة
+    </button>
+    <button class="tab @(activeTab == "circuits" ? "active" : "")" @onclick='() => SetTab("circuits")'>
+        ⚖️ كافة الدوائر (@(circuits?.Count ?? 0))
+    </button>
+    <button class="tab @(activeTab == "sessions" ? "active" : "")" @onclick='() => SetTab("sessions")'>
+        🗓️ كافة الجلسات (@(sessions?.Count ?? 0))
+    </button>
+    <button class="tab @(activeTab == "judges" ? "active" : "")" @onclick='() => SetTab("judges")'>
+        👨‍⚖️ السادة القضاة (@(judges?.Count ?? 0))
+    </button>
+    <button class="tab @(activeTab == "employees" ? "active" : "")" @onclick='() => SetTab("employees")'>
+        👨‍💼 الموظفين وسكرتيري الجلسات (@(employeesList?.Count ?? 0))
+    </button>
+    <button class="tab @(activeTab == "assignments" ? "active" : "")" @onclick='() => SetTab("assignments")'>
+        📜 سجل التكليفات (@(assignments?.Count ?? 0))
+    </button>
+</div>
+
+@* ==================== تبويب 1: استعراض تشكيل الدوائر والقضاة (التصفية التفاعلية) ==================== *@
+@if (activeTab == "formation-view")
+{
+    <section class="setup-card mb-4">
+        <div class="setup-heading">
+            <div class="setup-heading-icon">⚖️</div>
+            <div>
+                <h2>استعراض تشكيل الدوائر وتوزيع العمل القضائي</h2>
+                <p>اختر نوع التخصص القضائي، ثم حدد المأمورية الكلية أو المحكمة الجزئية لاستعراض الدائرة وتشكيل قضاتها وقراراتها الرسمية.</p>
+            </div>
+        </div>
+
+        @* أزرار اختيار نوع الإحصائية / التخصص *@
+        <div class="mb-4">
+            <label class="fw-semibold mb-2 d-block" style="font-size:0.9rem;color:var(--text-secondary)">نوع القضاء / التخصص:</label>
+            <div class="discipline-pill-group">
+                @foreach (var (code, nameAr) in StatisticalDisciplines.All)
+                {
+                    <button type="button"
+                            class="discipline-pill @(selectedDiscipline == code ? "active" : "")"
+                            @onclick="() => OnDisciplineSelected(code)">
+                        @switch (code)
+                        {
+                            case StatisticalDisciplines.Civil:
+                                <span>🏛️ @nameAr (كلي وجزئي)</span>
+                                break;
+                            case StatisticalDisciplines.Criminal:
+                                <span>⚖️ @nameAr (مستأنف وجزئي)</span>
+                                break;
+                            case StatisticalDisciplines.Family:
+                                <span>👨‍👩‍👧 @nameAr</span>
+                                break;
+                            case StatisticalDisciplines.Labor:
+                                <span>👷 @nameAr</span>
+                                break;
+                            default:
+                                <span>@(StatisticalDisciplines.GetIcon(code)) @nameAr</span>
+                                break;
+                        }
+                    </button>
+                }
+            </div>
+        </div>
+
+        @* حقول التصفية المتتالية *@
+        <div class="setup-fields">
+            @* 1. العام القضائي *@
+            <div>
+                <label>العام القضائي:</label>
+                <select class="form-control" value="@selectedYearId" @onchange="OnYearFilterChanged">
+                    @if (years is not null)
+                    {
+                        @foreach (var y in years)
+                        {
+                            <option value="@y.Id">@y.NameAr @(y.Status == "Active" ? "(نشط)" : "")</option>
+                        }
+                    }
+                </select>
+            </div>
+
+            @* 2. الشهر / الفترة *@
+            <div>
+                <label>الشهر / الفترة:</label>
+                <select class="form-control" value="@selectedPeriodId" @onchange="OnPeriodFilterChanged">
+                    @if (periods is not null)
+                    {
+                        @foreach (var p in periods)
+                        {
+                            <option value="@p.Id">@p.MonthNameAr (@p.MonthStartDate.ToString("yyyy-MM"))</option>
+                        }
+                    }
+                </select>
+            </div>
+
+            @* 3. المحكمة / المأمورية *@
+            <div>
+                <label>المحكمة أو المأمورية:</label>
+                <select class="form-control" value="@selectedCourtId" @onchange="OnCourtFilterChanged" disabled="@(isLoadingCourts || filteredCourts == null || filteredCourts.Count == 0)">
+                    @if (isLoadingCourts)
+                    {
+                        <option value="0">جاري تحميل المحاكم...</option>
+                    }
+                    else if (filteredCourts == null || filteredCourts.Count == 0)
+                    {
+                        <option value="0">-- لا توجد محاكم مطابقة --</option>
+                    }
+                    else
+                    {
+                        @foreach (var c in filteredCourts)
+                        {
+                            <option value="@c.Id">@c.NameAr</option>
+                        }
+                    }
+                </select>
+            </div>
+
+            @* 4. الدائرة القضائية *@
+            <div>
+                <label>الدائرة القضائية:</label>
+                <select class="form-control" value="@selectedCircuitId" @onchange="OnCircuitFilterChanged" disabled="@(isLoadingCircuits || filteredCircuits == null || filteredCircuits.Count == 0)">
+                    @if (isLoadingCircuits)
+                    {
+                        <option value="0">جاري تحميل الدوائر...</option>
+                    }
+                    else if (filteredCircuits == null || filteredCircuits.Count == 0)
+                    {
+                        <option value="0">-- لا توجد دوائر مطابقة --</option>
+                    }
+                    else
+                    {
+                        @foreach (var cir in filteredCircuits)
+                        {
+                            <option value="@cir.Id">@cir.NameAr</option>
+                        }
+                    }
+                </select>
+            </div>
+        </div>
+    </section>
+
+    @* ==================== تفاصيل تشكيل الدائرة المحددة ==================== *@
+    @if (isLoadingFormation)
+    {
+        <div style="padding:3rem;text-align:center">
+            <div class="spinner" style="margin:0 auto 1rem"></div>
+            <div class="fw-semibold">جاري تحميل بيانات وتشكيل الدائرة...</div>
+        </div>
+    }
+    else if (currentFormation is not null)
+    {
+        @* بطاقة الدائرة ومستواها القضائي *@
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-between align-center">
+                <div>
+                    <span class="badge font-monospace bg-secondary me-2">@currentFormation.CircuitCode</span>
+                    <strong style="font-size:1.15rem">@currentFormation.CircuitNameAr</strong>
+                </div>
+                <div>
+                    <span class="badge badge-info">المقر: @currentFormation.CourtUnitNameAr</span>
+                    <span class="badge @(currentFormation.IsClosed ? "badge-danger" : "badge-success") ms-2">
+                        @(currentFormation.IsClosed ? "مغلقة" : "نشطة")
+                    </span>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="d-flex gap-4 flex-wrap" style="font-size:0.9rem">
+                    <div>
+                        <span class="text-secondary">مستوى الدائرة:</span>
+                        <strong class="ms-1">@GetCircuitLevelDescription(currentFormation.CircuitKind)</strong>
+                    </div>
+                    <div>
+                        <span class="text-secondary">نصاب التشكيل:</span>
+                        <strong class="ms-1">
+                            @(currentFormation.MinJudges == 1 ? "قاضٍ فردي واحد" : $"{currentFormation.MinJudges} قضاة على الأقل")
+                        </strong>
+                    </div>
+                    <div>
+                        <span class="text-secondary">عدد الجلسات التابعة:</span>
+                        <strong class="ms-1">@currentFormation.Sessions.Count جلسة</strong>
+                    </div>
+                    <div>
+                        <span class="text-secondary">عدد القضاة بالتشكيل:</span>
+                        <strong class="ms-1">@currentFormation.Judges.Count قاضٍ</strong>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        @* جدول الجلسات التابعة للدائرة *@
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-between align-center">
+                <span class="card-title">🗓️ الجلسات التابعة للدائرة ومواعيد الانعقاد</span>
+                <span class="badge badge-muted">@currentFormation.Sessions.Count جلسة</span>
+            </div>
+            <div class="card-body" style="padding:0">
+                @if (currentFormation.Sessions.Count == 0)
+                {
+                    <div style="padding:2rem;text-align:center;color:var(--text-muted)">لا توجد جلسات مسجلة لهذه الدائرة.</div>
+                }
+                else
+                {
+                    <div class="table-wrapper" style="border:none">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>ميعاد وجدول الانعقاد</th>
+                                    <th>الاختصاص المكاني (المناطق الجغرافية)</th>
+                                    <th>سكرتير الجلسة</th>
+                                    <th>تاريخ السريان</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var s in currentFormation.Sessions)
+                                {
+                                    <tr>
+                                        <td class="fw-bold">@s.ScheduleDescription</td>
+                                        <td>
+                                            @if (s.JurisdictionNamesAr.Count > 0)
+                                            {
+                                                <div class="d-flex gap-1 flex-wrap">
+                                                    @foreach (var area in s.JurisdictionNamesAr)
+                                                    {
+                                                        <span class="badge badge-secondary" style="font-size:0.75rem">@area</span>
+                                                    }
+                                                </div>
+                                            }
+                                            else
+                                            {
+                                                <span class="text-secondary" style="font-size:0.85rem">كافة المراكز والمناطق التابعة</span>
+                                            }
+                                        </td>
+                                        <td>
+                                            @if (!string.IsNullOrEmpty(s.EmployeeNameAr))
+                                            {
+                                                <span class="badge badge-info" style="font-size:0.8rem">👤 @s.EmployeeNameAr</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="text-muted-color">—</span>
+                                            }
+                                        </td>
+                                        <td>من @s.EffectiveFrom.ToString("yyyy-MM-dd") إلى @s.EffectiveTo.ToString("yyyy-MM-dd")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        </div>
+
+        @* كشف تشكيل السادة القضاة بالدائرة *@
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-between align-center">
+                <span class="card-title">👨‍⚖️ تشكيل السادة القضاة الذين عملوا بالدائرة خلال العام</span>
+                <span class="badge badge-primary">التشكيل الرسمي</span>
+            </div>
+            <div class="card-body" style="padding:0">
+                @if (currentFormation.Judges.Count == 0)
+                {
+                    <div style="padding:2rem;text-align:center;color:var(--text-muted)">لم يتم تسجيل قضاة لهذه الدائرة بعد.</div>
+                }
+                else
+                {
+                    <div class="table-wrapper" style="border:none">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>الصفة القضائية</th>
+                                    <th>اسم السيد المستشار / القاضي</th>
+                                    <th>تاريخ بدء العمل</th>
+                                    <th>حالة القاضي هذا الشهر</th>
+                                    <th>ملاحظات</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var j in currentFormation.Judges)
+                                {
+                                    <tr>
+                                        <td>
+                                            <span class="badge @(j.JudicialRoleNameAr.Contains("رئيس") ? "badge-primary" : "badge-secondary")">
+                                                @j.JudicialRoleNameAr
+                                            </span>
+                                        </td>
+                                        <td class="fw-bold" style="font-size:0.95rem">@j.JudgeNameAr</td>
+                                        <td>@j.EffectiveFrom.ToString("yyyy-MM-dd")</td>
+                                        <td>
+                                            @if (j.StatusThisMonth.Contains("على رأس العمل"))
+                                            {
+                                                <span class="badge badge-success">🟢 @j.StatusThisMonth</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="badge badge-warning">🟠 @j.StatusThisMonth</span>
+                                            }
+                                        </td>
+                                        <td>@(j.Notes ?? "-")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        </div>
+
+        @* قرارات الندب والنقل والإجازات المؤثرة على التشكيل *@
+        <div class="card mb-4" style="border-right:4px solid var(--brand-primary)">
+            <div class="card-header d-flex justify-between align-center flex-wrap gap-2">
+                <div>
+                    <span class="card-title">📜 قرارات الندب والنقل والإجازات المؤثرة على تشكيل القضاة لهذا العام</span>
+                    <span class="badge badge-muted ms-2">سجل الحركات القضائية</span>
+                </div>
+                <a href="/judge-movements?circuitId=@currentFormation.CircuitId" class="btn btn-sm btn-primary">
+                    ➕ تسجيل قرار / حركة جديدة لهذه الدائرة
+                </a>
+            </div>
+            <div class="card-body">
+                <div style="display:flex;flex-direction:column;gap:0.75rem">
+                    @foreach (var dec in currentFormation.Decisions)
+                    {
+                        <div class="p-3 border rounded d-flex justify-between align-center flex-wrap gap-2" style="background:var(--surface-hover)">
+                            <div>
+                                <div class="d-flex align-center gap-2 mb-1">
+                                    <span class="badge badge-info">@dec.DecisionType</span>
+                                    <strong>@dec.Reference</strong>
+                                    <span class="text-secondary" style="font-size:0.8rem">بتاريخ: @dec.DecisionDate.ToString("yyyy-MM-dd")</span>
+                                </div>
+                                <div style="font-size:0.9rem;color:var(--text-primary)">@dec.Description</div>
+                            </div>
+                            <div>
+                                <span class="badge badge-success">@dec.Status</span>
+                            </div>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@* ==================== تبويب 2: كافة الدوائر القضائية ==================== *@
+@if (activeTab == "circuits")
+{
+    <div class="card">
+        <div class="card-header d-flex justify-between align-center flex-wrap gap-2">
+            <span class="card-title">قائمة كافة الدوائر القضائية (@filteredCircuitsList.Count دائرة)</span>
+            <div class="d-flex align-center gap-2 flex-wrap">
+                <input type="text" class="form-control form-control-sm" placeholder="🔍 بحث بالاسم أو الكود..."
+                       style="min-width: 200px;"
+                       @bind="circuitSearchTerm" @bind:event="oninput" />
+
+                <select class="form-control form-control-sm" value="@selectedYearId" @onchange="OnYearFilterChanged" style="min-width: 140px;">
+                    @if (years is not null)
+                    {
+                        @foreach (var y in years)
+                        {
+                            <option value="@y.Id">@y.NameAr @(y.Status == "Active" ? "(نشط)" : "")</option>
+                        }
+                    }
+                </select>
+
+                <select class="form-control form-control-sm" @bind="selectedCircuitCourtFilter" style="min-width: 170px;">
+                    <option value="0">كل المحاكم والمأموريات</option>
+                    @if (userAvailableCourts is not null)
+                    {
+                        @foreach (var c in userAvailableCourts)
+                        {
+                            <option value="@c.Id">@c.NameAr</option>
+                        }
+                    }
+                </select>
+
+                <select class="form-control form-control-sm" @bind="selectedCircuitKindFilter" style="min-width: 140px;">
+                    <option value="">كل أنواع الدوائر</option>
+                    <option value="CivilFull">مدني كلي</option>
+                    <option value="CriminalAppeal">جنح مستأنف</option>
+                    <option value="Family">أسرة</option>
+                    <option value="Labor">عمال</option>
+                    <option value="Partial">جزئي</option>
+                </select>
+            </div>
+        </div>
+        <div class="card-body" style="padding:0">
+            @if (circuits is null)
+            {
+                <div style="padding:1.5rem" class="d-flex align-center gap-2"><div class="spinner"></div><span>جاري التحميل...</span></div>
+            }
+            else if (filteredCircuitsList.Count == 0)
+            {
+                <div style="padding:2rem;text-align:center;color:var(--text-muted)">لا توجد دوائر مطابقة لمعايير البحث.</div>
+            }
+            else
+            {
+                <div class="table-wrapper" style="border:none">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>كود الدائرة</th>
+                                <th>اسم الدائرة</th>
+                                <th>المحكمة / المأمورية</th>
+                                <th>نوع الدائرة</th>
+                                <th>عدد الجلسات</th>
+                                <th>الحالة</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var c in filteredCircuitsList)
+                            {
+                                <tr>
+                                    <td><code>@c.Code</code></td>
+                                    <td class="fw-semibold">@c.NameAr</td>
+                                    <td>@c.CourtUnitNameAr</td>
+                                    <td><span class="badge badge-info">@GetCircuitLevelShortName(c.CircuitKind)</span></td>
+                                    <td><span class="badge badge-secondary">@c.SessionsCount جلسات</span></td>
+                                    <td><span class="badge @(c.IsClosed ? "badge-danger" : "badge-success")">@(c.IsClosed ? "مغلقة" : "نشطة")</span></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@* ==================== تبويب 3: كافة الجلسات ==================== *@
+@if (activeTab == "sessions")
+{
+    <div class="card">
+        <div class="card-header d-flex justify-between align-center flex-wrap gap-2">
+            <span class="card-title">قائمة الجلسات القضائية (@filteredSessionsList.Count جلسة)</span>
+            <div class="d-flex align-center gap-2 flex-wrap">
+                <input type="text" class="form-control form-control-sm" placeholder="🔍 بحث بالاسم أو الكود..."
+                       style="min-width: 200px;"
+                       @bind="sessionSearchTerm" @bind:event="oninput" />
+
+                <select class="form-control form-control-sm" value="@selectedYearId" @onchange="OnYearFilterChanged" style="min-width: 140px;">
+                    @if (years is not null)
+                    {
+                        @foreach (var y in years)
+                        {
+                            <option value="@y.Id">@y.NameAr @(y.Status == "Active" ? "(نشط)" : "")</option>
+                        }
+                    }
+                </select>
+
+                <select class="form-control form-control-sm" @bind="selectedSessionCourtFilter" style="min-width: 170px;">
+                    <option value="0">كل المحاكم</option>
+                    @if (userAvailableCourts is not null)
+                    {
+                        @foreach (var c in userAvailableCourts)
+                        {
+                            <option value="@c.Id">@c.NameAr</option>
+                        }
+                    }
+                </select>
+
+                <select class="form-control form-control-sm" @bind="selectedSessionCircuitFilter" style="min-width: 170px;">
+                    <option value="0">كل الدوائر</option>
+                    @if (circuits is not null)
+                    {
+                        var availableCircuits = selectedSessionCourtFilter > 0
+                            ? circuits.Where(c => c.CourtUnitId == selectedSessionCourtFilter)
+                            : circuits;
+                        @foreach (var c in availableCircuits)
+                        {
+                            <option value="@c.Id">@c.NameAr</option>
+                        }
+                    }
+                </select>
+            </div>
+        </div>
+        <div class="card-body" style="padding:0">
+            @if (sessions is null)
+            {
+                <div style="padding:1.5rem" class="d-flex align-center gap-2"><div class="spinner"></div><span>جاري التحميل...</span></div>
+            }
+            else if (filteredSessionsList.Count == 0)
+            {
+                <div style="padding:2rem;text-align:center;color:var(--text-muted)">لا توجد جلسات مطابقة لمعايير البحث.</div>
+            }
+            else
+            {
+                <div class="table-wrapper" style="border:none">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>كود الجلسة</th>
+                                <th>اسم وتفاصيل الجلسة</th>
+                                <th>الدائرة التابعة</th>
+                                <th>نوع الدعاوى (الجلسة)</th>
+                                <th>الاختصاص المكاني (النطاقات الجغرافية)</th>
+                                <th>سكرتير الجلسة</th>
+                                <th style="text-align:center">تقرير الإدخال</th>
+                                <th style="text-align:center">الحالة</th>
+                                <th style="text-align:center">الإجراءات</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var s in filteredSessionsList)
+                            {
+                                <tr>
+                                    <td><code>@s.Code</code></td>
+                                    <td>
+                                        <div class="fw-semibold text-primary">@s.NameAr</div>
+                                        @if (!string.IsNullOrEmpty(s.Description))
+                                        {
+                                            <div class="text-secondary small mt-1" style="font-size:0.78rem;">
+                                                📝 @s.Description
+                                            </div>
+                                        }
+                                        else if (!string.IsNullOrEmpty(s.ScheduleDescription) && s.ScheduleDescription != s.NameAr)
+                                        {
+                                            <div class="text-secondary small mt-1" style="font-size:0.75rem;">
+                                                📅 @s.ScheduleDescription
+                                            </div>
+                                        }
+                                    </td>
+                                    <td>@s.CircuitNameAr</td>
+                                    <td>
+                                        @if (s.CaseTypeNamesAr is { Count: > 0 })
+                                        {
+                                            <div class="d-flex gap-1 flex-wrap">
+                                                @foreach (var ct in s.CaseTypeNamesAr)
+                                                {
+                                                    <span class="badge badge-info" style="font-size:0.75rem">⚖️ @ct</span>
+                                                }
+                                            </div>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted-color">—</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        @if (s.JurisdictionNamesAr is { Count: > 0 })
+                                        {
+                                            <div class="d-flex gap-1 flex-wrap">
+                                                @foreach (var area in s.JurisdictionNamesAr)
+                                                {
+                                                    <span class="badge badge-secondary" style="font-size:0.75rem">📍 @area</span>
+                                                }
+                                            </div>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted-color">—</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        @if (!string.IsNullOrEmpty(s.EmployeeNameAr))
+                                        {
+                                            <span class="badge badge-info" style="font-size:0.8rem;background:rgba(13,110,253,0.12);color:#0d6efd;border:1px solid rgba(13,110,253,0.3)">
+                                                👤 @s.EmployeeNameAr
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted-color">—</span>
+                                        }
+                                    </td>
+                                    <td style="text-align:center">
+                                        <span class="badge @(s.ShowInProgressReport ? "badge-success" : "badge-secondary")" style="font-size:0.75rem" title="@(s.ShowInProgressReport ? "تظهر في تقرير نسبة الإدخال الشهري" : "مستثناة من تقرير نسبة الإدخال الشهري")">
+                                            @(s.ShowInProgressReport ? "🟢 تظهر" : "⚪ مستثناة")
+                                        </span>
+                                    </td>
+                                    <td style="text-align:center">
+                                        <span class="badge @(s.IsClosed ? "badge-danger" : "badge-success")">
+                                            @(s.IsClosed ? "مغلقة / معطلة" : "نشطة")
+                                        </span>
+                                    </td>
+                                    <td style="text-align:center">
+                                        <div class="d-flex align-center justify-center gap-1 flex-wrap">
+                                            <button class="btn btn-sm btn-outline-info" @onclick="() => OpenSessionOpeningBalanceModal(s)" title="الرصيد الافتتاحي للجلسة أول العام القضائي">
+                                                💰 الرصيد الافتتاحي
+                                            </button>
+                                            <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenEditSessionModal(s)" title="تعديل بيانات واختصاص الجلسة">
+                                                ✏️ تعديل
+                                            </button>
+                                            <button class="btn btn-sm @(s.IsClosed ? "btn-outline-success" : "btn-outline-danger")"
+                                                    @onclick="() => ToggleSessionClosed(s.Id)"
+                                                    title="@(s.IsClosed ? "تنشيط الجلسة" : "تعطيل الجلسة")">
+                                                @(s.IsClosed ? "✅ تنشيط" : "⛔ تعطيل")
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@* ==================== تبويب 4: السادة القضاة ==================== *@
+@if (activeTab == "judges")
+{
+    <div class="card">
+        <div class="card-header d-flex justify-between align-center flex-wrap gap-2">
+            <div>
+                <span class="card-title">قائمة السادة القضاة (@filteredJudgesTabList.Count قاضٍ)</span>
+                <span class="text-secondary" style="font-size:0.8rem;display:block">
+                    السادة القضاة العاملون بالجلسات والدوائر المتاحة لنطاقك خلال العام القضائي المحدد
+                </span>
+            </div>
+            <div class="d-flex align-center gap-2 flex-wrap">
+                <input type="text" class="form-control form-control-sm" placeholder="🔍 بحث باسم القاضي (يحتوي)..."
+                       style="min-width: 220px;"
+                       @bind="judgeSearchFilter" @bind:event="oninput" />
+
+                <select class="form-control form-control-sm" value="@selectedYearId" @onchange="OnYearFilterChanged" style="min-width: 140px;">
+                    @if (years is not null)
+                    {
+                        @foreach (var y in years)
+                        {
+                            <option value="@y.Id">@y.NameAr @(y.Status == "Active" ? "(نشط)" : "")</option>
+                        }
+                    }
+                </select>
+
+                <select class="form-control form-control-sm" @bind="selectedJudgeCourtFilter" style="min-width: 170px;">
+                    <option value="0">كل المحاكم المنشئة</option>
+                    @if (userAvailableJudgeCourts is not null)
+                    {
+                        @foreach (var c in userAvailableJudgeCourts)
+                        {
+                            <option value="@c.Id">🏛️ @c.NameAr</option>
+                        }
+                    }
+                </select>
+
+                <select class="form-control form-control-sm" @bind="selectedJudgeStatusFilter" style="min-width: 120px;">
+                    <option value="all">كل الحالات</option>
+                    <option value="active">النشطين فقط</option>
+                    <option value="inactive">المعطلين فقط</option>
+                </select>
+            </div>
+        </div>
+        <div class="card-body" style="padding:0">
+            @if (judges is null)
+            {
+                <div style="padding:1.5rem" class="d-flex align-center gap-2"><div class="spinner"></div><span>جاري التحميل...</span></div>
+            }
+            else if (filteredJudgesTabList.Count == 0)
+            {
+                <div style="padding:2rem;text-align:center;color:var(--text-muted)">لا يوجد قضاة مطابقين لمعايير البحث.</div>
+            }
+            else
+            {
+                <div class="table-wrapper" style="border:none">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>كود القاضي</th>
+                                <th>الاسم الرباعي</th>
+                                <th>المحكمة المنشئة</th>
+                                <th>الحالة</th>
+                                <th style="text-align:center">الإجراءات</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var j in filteredJudgesTabList)
+                            {
+                                var canEditThisJudge = CanEditJudge(j);
+                                <tr>
+                                    <td><code>@j.Code</code></td>
+                                    <td class="fw-semibold">@j.FullNameAr</td>
+                                    <td>
+                                        @if (!string.IsNullOrEmpty(j.CreatedCourtUnitNameAr))
+                                        {
+                                            <span class="badge badge-info">🏛️ @j.CreatedCourtUnitNameAr</span>
+                                        }
+                                        else
+                                        {
+                                            <span style="font-size:0.85rem;color:var(--text-muted)">المركز العام</span>
+                                        }
+                                    </td>
+                                    <td><span class="badge @(j.IsActive ? "badge-success" : "badge-muted")">@(j.IsActive ? "نشط" : "معطل")</span></td>
+                                    <td style="text-align:center">
+                                        @if (canEditThisJudge)
+                                        {
+                                            <button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => OpenEditJudgeModal(j)">
+                                                ✏️ تعديل
+                                            </button>
+                                        }
+                                        else
+                                        {
+                                            <span class="badge badge-muted" title="لا يمكن تعديل بيانات القاضي إلا من خلال محكمته المنشئة">🔒 محكمة أخرى</span>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+
+@* ==================== تبويب 5: سجل التكليفات ==================== *@
+@if (activeTab == "assignments")
+{
+    <div class="card">
+        <div class="card-header d-flex justify-between align-center flex-wrap gap-2">
+            <div>
+                <span class="card-title">📜 سجل التكليفات القضائية للدوائر (تشكيل الدوائر)</span>
+                <span class="badge badge-info ms-2">@(assignments?.Count ?? 0) تكليفاً مسجلاً</span>
+                <span class="text-secondary" style="font-size:0.8rem;display:block">
+                    تكليفات وتشكيلات القضاة المؤثرة على الجلسات والدوائر المتاحة لنطاقك خلال العام القضائي المحدد
+                </span>
+            </div>
+            <div class="d-flex align-center gap-2">
+                <label class="text-secondary mb-0" style="font-size:0.85rem">العام القضائي:</label>
+                <select class="form-control form-control-sm" value="@selectedYearId" @onchange="OnYearFilterChanged" style="min-width: 140px;">
+                    @if (years is not null)
+                    {
+                        @foreach (var y in years)
+                        {
+                            <option value="@y.Id">@y.NameAr @(y.Status == "Active" ? "(نشط)" : "")</option>
+                        }
+                    }
+                </select>
+            </div>
+        </div>
+        <div class="card-body">
+            @if (circuits is null || circuits.Count == 0)
+            {
+                <div class="text-muted-color">لا توجد دوائر قضائية مسجلة أو متاحة لنطاقك في هذا العام القضائي لعرض وتعيين تكليفات القضاة.</div>
+            }
+            else
+            {
+                <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(420px, 1fr));gap:1.25rem">
+                    @foreach (var c in circuits)
+                    {
+                        var cAssignments = assignments?.Where(a => a.CircuitId == c.Id).OrderBy(a => a.DisplayOrder).ToList()
+                            ?? new List<CircuitJudgeAssignmentDto>();
+
+                        <div class="card" style="border:1px solid var(--surface-border);margin-bottom:0;display:flex;flex-direction:column;">
+                            <div class="card-header" style="background:var(--surface-bg);display:flex;justify-content:space-between;align-items:center;padding:0.75rem 1rem;">
+                                <div>
+                                    <span class="badge bg-secondary font-monospace" style="margin-left:0.5rem">@c.Code</span>
+                                    <strong>@c.NameAr</strong>
+                                </div>
+                                <span class="badge badge-secondary" style="font-size:0.75rem">@c.CourtUnitNameAr</span>
+                            </div>
+                            <div class="card-body" style="padding:0.75rem 1rem;flex:1;">
+                                @if (cAssignments.Count == 0)
+                                {
+                                    <div class="text-muted-color" style="font-size:0.85rem;padding:0.5rem 0;">لا توجد تكليفات مسجلة لهذه الدائرة.</div>
+                                }
+                                else
+                                {
+                                    <div style="display:flex;flex-direction:column;gap:0.4rem;">
+                                        @foreach (var a in cAssignments)
+                                        {
+                                            var roleClass = a.JudicialRoleNameAr.Contains("رئيس") ? "badge-primary" : "badge-secondary";
+                                            <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface-ground, #f8f9fa);padding:0.4rem 0.6rem;border-radius:4px;border-right:3px solid var(--primary-color, #1a56db);">
+                                                <div style="display:flex;align-items:center;gap:0.5rem;">
+                                                    <span class="badge @roleClass" style="min-width:90px;text-align:center;">@a.JudicialRoleNameAr</span>
+                                                    <span class="fw-semibold" style="font-size:0.9rem;">@a.JudgeNameAr</span>
+                                                </div>
+                                                <span class="text-muted-color" style="font-size:0.75rem;">ترتيب: @a.DisplayOrder</span>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@* ==================== تبويب 6: جدول الموظفين وسكرتيري الجلسات ==================== *@
+@if (activeTab == "employees")
+{
+    <div class="card">
+        <div class="card-header d-flex justify-between align-center flex-wrap gap-2">
+            <div>
+                <span class="card-title">👨‍💼 سجل موظفي المحكمة وسكرتيري الجلسات</span>
+                <span class="badge badge-info ms-2">@(employeesList?.Count ?? 0) موظفاً مسجلاً</span>
+                <span class="text-secondary" style="font-size:0.8rem;display:block">
+                    إدارة أمناء السر وكتبة الجلسات وإمكانية ربطهم بالجلسات وتحديث بياناتهم
+                </span>
+            </div>
+            <div class="d-flex align-center gap-2 flex-wrap">
+                <input type="text" class="form-control form-control-sm" placeholder="🔍 بحث بالاسم أو الكود..."
+                       style="width: 200px;" @bind="employeeSearchTerm" @bind:event="oninput" />
+
+                <select class="form-control form-control-sm" style="width: 170px;" @bind="selectedEmployeeCourtFilter">
+                    <option value="0">كل المحاكم والمأموريات</option>
+                    @if (courts is not null)
+                    {
+                        @foreach (var c in courts)
+                        {
+                            <option value="@c.Id">@c.NameAr</option>
+                        }
+                    }
+                </select>
+
+                <select class="form-control form-control-sm" style="width: 130px;" @bind="selectedEmployeeStatusFilter">
+                    <option value="all">كل الحالات</option>
+                    <option value="active">على رأس العمل (نشط)</option>
+                    <option value="inactive">غير نشط</option>
+                </select>
+
+                <button class="btn btn-sm btn-primary" @onclick="OpenAddEmployeeModal">
+                    ➕ موظف جديد
+                </button>
+            </div>
+        </div>
+        <div class="card-body">
+            @{
+                var filteredEmployees = employeesList?.AsEnumerable() ?? Enumerable.Empty<EmployeeDto>();
+                if (!string.IsNullOrWhiteSpace(employeeSearchTerm))
+                {
+                    var term = employeeSearchTerm.Trim();
+                    filteredEmployees = filteredEmployees.Where(e =>
+                        e.FullNameAr.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                        e.Code.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                        (e.PhoneNumber != null && e.PhoneNumber.Contains(term)) ||
+                        (e.NationalId != null && e.NationalId.Contains(term)));
+                }
+                if (selectedEmployeeCourtFilter > 0)
+                {
+                    filteredEmployees = filteredEmployees.Where(e => e.CourtUnitId == selectedEmployeeCourtFilter);
+                }
+                if (selectedEmployeeStatusFilter == "active")
+                {
+                    filteredEmployees = filteredEmployees.Where(e => e.IsActive);
+                }
+                else if (selectedEmployeeStatusFilter == "inactive")
+                {
+                    filteredEmployees = filteredEmployees.Where(e => !e.IsActive);
+                }
+                var empList = filteredEmployees.OrderBy(e => e.Code).ToList();
+            }
+
+            @if (empList.Count == 0)
+            {
+                <div class="text-muted-color">لا يوجد موظفون مطابقون لخيارات التصفية المحددة.</div>
+            }
+            else
+            {
+                <div class="table-container">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>الكود</th>
+                                <th>الاسم الكامل</th>
+                                <th>المسمى الوظيفي</th>
+                                <th>المحكمة / المأمورية التابع لها</th>
+                                <th>رقم الهاتف</th>
+                                <th>الرقم القومي</th>
+                                <th>الحالة</th>
+                                <th style="text-align: center;">إجراءات</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var emp in empList)
+                            {
+                                <tr>
+                                    <td><span class="badge bg-secondary font-monospace">@emp.Code</span></td>
+                                    <td class="fw-semibold">@emp.FullNameAr</td>
+                                    <td>
+                                        <span class="badge badge-info" style="font-size:0.8rem">
+                                            @(emp.JobTitle ?? "أمين سر جلسة")
+                                        </span>
+                                    </td>
+                                    <td>@(emp.CourtUnitNameAr ?? "غير محدد")</td>
+                                    <td>@(emp.PhoneNumber ?? "—")</td>
+                                    <td class="font-monospace" style="font-size:0.85rem">@(emp.NationalId ?? "—")</td>
+                                    <td>
+                                        @if (emp.IsActive)
+                                        {
+                                            <span class="badge badge-success">نشط</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="badge badge-danger">غير نشط</span>
+                                        }
+                                    </td>
+                                    <td style="text-align: center;">
+                                        <div class="d-flex justify-center gap-1">
+                                            <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenEditEmployeeModal(emp)" title="تعديل بيانات الموظف">
+                                                ✏️ تعديل
+                                            </button>
+                                            <button class="btn btn-sm btn-outline-danger" @onclick="() => HandleDeleteEmployee(emp.Id)" title="حذف الموظف">
+                                                🗑️ حذف
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@* ==================== مودال إضافة دائرة (مع التحقق الصارم) ==================== *@
+@if (showAddCircuitModal)
+{
+    <div class="modal-backdrop" @onclick="CloseModals">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">➕ إضافة دائرة قضائية جديدة</span>
+                <button class="modal-close" @onclick="CloseModals">✕</button>
+            </div>
+            <EditForm Model="circuitModel" OnValidSubmit="HandleCreateCircuit">
+                <div class="modal-body">
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> المحكمة أو المأمورية التابعة</label>
+                        <InputSelect class="form-control" Value="circuitModel.CourtUnitId" ValueExpression="() => circuitModel.CourtUnitId" ValueChanged="(long id) => OnCircuitCourtChanged(id)" required>
+                            @if (courts is not null)
+                            {
+                                @foreach (var court in courts)
+                                {
+                                    <option value="@court.Id">@court.NameAr (@GetUnitKindNameAr(court.UnitKind))</option>
+                                }
+                            }
+                        </InputSelect>
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> نوع ومستوى الدائرة (مقيد بالمحكمة)</label>
+                        <InputSelect class="form-control" Value="circuitModel.CircuitKind" ValueExpression="() => circuitModel.CircuitKind" ValueChanged="(string k) => OnCircuitKindChanged(k)">
+                            @foreach (var opt in GetAllowedCircuitKindsForCourt(circuitModel.CourtUnitId))
+                            {
+                                <option value="@opt.Value">@opt.Label</option>
+                            }
+                        </InputSelect>
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> كود الدائرة (توليد تلقائي)</label>
+                        <div class="d-flex gap-2">
+                            <InputText class="form-control" @bind-Value="circuitModel.Code" placeholder="مثال: CV-09" required />
+                            <button type="button" class="btn btn-outline-secondary" @onclick="() => { AutoGenerateCircuitCode(); AutoSuggestCircuitName(); }" title="إعادة توليد الكود والاسم تلقائياً">🔄 توليد تلقائي</button>
+                        </div>
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> اسم الدائرة</label>
+                        <InputText class="form-control" @bind-Value="circuitModel.NameAr" placeholder="مثال: الدائرة التاسعة مدني كلي بني سويف" required />
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseModals">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">حفظ الدائرة</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@* ==================== مودال إضافة جلسة ==================== *@
+@if (showAddSessionModal)
+{
+    <div class="modal-backdrop" @onclick="CloseModals">
+        <div class="modal" style="max-width: 650px;" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">➕ إضافة جلسة قضائية جديدة</span>
+                <button class="modal-close" @onclick="CloseModals">✕</button>
+            </div>
+            <EditForm Model="sessionModel" OnValidSubmit="HandleCreateSession">
+                <div class="modal-body">
+                    @* 1. اختيار المحكمة أو المأمورية *@
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> المحكمة أو المأمورية التابعة</label>
+                        <select class="form-control" value="@sessionCourtUnitId" @onchange="OnSessionModalCourtChanged">
+                            @if (courts is not null)
+                            {
+                                @foreach (var c in courts)
+                                {
+                                    <option value="@c.Id">@c.NameAr (@GetUnitKindNameAr(c.UnitKind))</option>
+                                }
+                            }
+                        </select>
+                    </div>
+
+                    @* 2. اختيار الدائرة من الدوائر التابعة للمحكمة *@
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> الدائرة التابعة</label>
+                        <select class="form-control" value="@sessionModel.CircuitId" @onchange="OnSessionModalCircuitChanged">
+                            @foreach (var c in availableCircuitsForSessionModal)
+                            {
+                                <option value="@c.Id">@c.NameAr (@c.Code) - @GetCircuitLevelShortName(c.CircuitKind)</option>
+                            }
+                        </select>
+                    </div>
+
+                    @* 3. كود واسم الجلسة *@
+                    <div class="row" style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+                        <div class="form-group mb-3">
+                            <label class="form-label"><span class="required">*</span> كود الجلسة</label>
+                            <InputText class="form-control" @bind-Value="sessionModel.Code" placeholder="مثال: S-SAT" required />
+                        </div>
+
+                        <div class="form-group mb-3">
+                            <label class="form-label"><span class="required">*</span> اسم الجلسة</label>
+                            <InputText class="form-control" @bind-Value="sessionModel.NameAr" placeholder="مثال: جلسة السبت أسبوع أول" required />
+                        </div>
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">جدول الانعقاد واليوم</label>
+                        <InputText class="form-control" @bind-Value="sessionModel.ScheduleDescription" placeholder="مثال: السبت أسبوع 1 و 3" />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">تفاصيل ووصف الجلسة القياسي (اليوم - النوع - الاختصاص المكاني - اختصار الدائرة)</label>
+                        <InputText class="form-control" @bind-Value="sessionModel.Description" placeholder="مثال: السبت - مدني كلي - محافظة بني سويف - د1" />
+                        <span class="text-secondary" style="font-size:0.75rem">الصيغة المعتمدة: [اليوم] - [النوع أو الدعاوى] - [الاختصاص المكاني] - [د1، د2]</span>
+                    </div>
+
+                    <div class="form-group mb-3 p-2 border rounded" style="background:var(--surface-hover);">
+                        <div class="d-flex align-center gap-2">
+                            <input type="checkbox" id="addSessionShowProgress" @bind="sessionModel.ShowInProgressReport" style="width:18px;height:18px;cursor:pointer" />
+                            <label for="addSessionShowProgress" class="m-0 fw-semibold" style="cursor:pointer">
+                                📊 ظهور الجلسة في كشف ونسبة إدخال الإحصائية الشهرية
+                            </label>
+                        </div>
+                        <div class="text-secondary mt-1" style="font-size:0.75rem">
+                            تظهر كافة الجلسات افتراضياً في تقرير نسبة الإدخال، عدا الجلسات الجنائية المستثناة كالعنف والبيئة والمرور والأمن... إلخ.
+                        </div>
+                    </div>
+
+                    @* 4. الاختصاص المكاني والنطاقات الجغرافية (يمكن تغطية أكثر من نطاق جغرافي) *@
+                    <div class="form-group mb-3">
+                        <div class="d-flex justify-between align-center mb-1">
+                            <label class="form-label fw-bold mb-0" style="color:var(--brand-primary)">
+                                📍 الاختصاص المكاني والنطاقات الجغرافية للجلسة: <span class="required">*</span>
+                            </label>
+                            <span class="badge @(sessionModel.SelectedGeographicAreaIds.Count > 0 ? "badge-primary" : "badge-warning")" style="font-size:0.75rem">
+                                @(sessionModel.SelectedGeographicAreaIds.Count > 0 ? $"تم اختيار {sessionModel.SelectedGeographicAreaIds.Count} نطاق" : "لم يتم الاختيار بعد")
+                            </span>
+                        </div>
+                        <div class="text-secondary mb-2" style="font-size:0.8rem">
+                            قد تغطي الجلسة نطاقاً جغرافياً واحداً أو أكثر (مثال: قسم أول وقسم ثانٍ، أو مركز وبندر معاً).
+                        </div>
+
+                        @* شريط تصفية النطاقات وأزرار التحديد السريع *@
+                        <div class="d-flex gap-2 mb-2 flex-wrap align-center">
+                            <input type="text" class="form-control form-control-sm" placeholder="🔍 تصفية النطاقات بالاسم أو الكود..."
+                                   style="max-width:210px;"
+                                   @bind="sessionGeoSearchTerm" @bind:event="oninput" />
+
+                            <select class="form-control form-control-sm" style="max-width:130px;" @bind="sessionGeoKindFilter">
+                                <option value="">كل الأنواع</option>
+                                <option value="Markaz">مراكز</option>
+                                <option value="PoliceStation">أقسام شرطة</option>
+                                <option value="City">مدن</option>
+                                <option value="District">أحياء</option>
+                                <option value="Governorate">محافظات</option>
+                            </select>
+
+                            <button type="button" class="btn btn-xs btn-outline-primary" @onclick="SelectAllFilteredSessionGeoAreas" title="تحديد جميع النطاقات المعروضة">
+                                ☑️ تحديد الكل
+                            </button>
+                            <button type="button" class="btn btn-xs btn-outline-secondary" @onclick="DeselectAllSessionGeoAreas" title="إلغاء تحديد كافة النطاقات">
+                                ✕ إلغاء التحديد
+                            </button>
+                        </div>
+
+                        @* شريط النطاقات المختارة كـ Badges *@
+                        @if (sessionModel.SelectedGeographicAreaIds.Count > 0)
+                        {
+                            <div class="p-2 mb-2 bg-light border rounded d-flex gap-1 flex-wrap align-center">
+                                <span class="text-secondary" style="font-size:0.75rem">المحدد:</span>
+                                @foreach (var aid in sessionModel.SelectedGeographicAreaIds)
+                                {
+                                    var area = activeGeoAreas.FirstOrDefault(a => a.Id == aid);
+                                    if (area != null)
+                                    {
+                                        <span class="badge badge-primary d-inline-flex align-center gap-1" style="font-size:0.78rem; padding:4px 8px;">
+                                            <span>📍 @area.NameAr</span>
+                                            <button type="button" class="btn btn-link p-0 text-white" style="line-height:1; font-size:0.8rem; text-decoration:none;" @onclick="() => RemoveSessionGeoArea(aid)" title="إزالة">✕</button>
+                                        </span>
+                                    }
+                                }
+                            </div>
+                        }
+
+                        @* قائمة النطاقات مع Checkboxes *@
+                        <div class="p-2 border rounded" style="max-height: 180px; overflow-y: auto; background: var(--surface-hover);">
+                            @{
+                                var displayedAreas = GetFilteredGeoAreas(sessionGeoSearchTerm, sessionGeoKindFilter);
+                            }
+                            @if (displayedAreas.Count == 0)
+                            {
+                                <div class="text-muted-color" style="font-size:0.85rem">لا توجد نطاقات جغرافية نشطة مطابقة للبحث.</div>
+                            }
+                            else
+                            {
+                                @foreach (var a in displayedAreas)
+                                {
+                                    var isChecked = sessionModel.SelectedGeographicAreaIds.Contains(a.Id);
+                                    <div class="d-flex align-center gap-2 mb-1 p-1 rounded" style="@(isChecked ? "background:rgba(13, 110, 253, 0.08);" : "")">
+                                        <input type="checkbox" id="add_geo_@a.Id"
+                                               checked="@isChecked"
+                                               @onchange="(e) => ToggleSessionGeoArea(a.Id, e)"
+                                               style="width:16px;height:16px;cursor:pointer" />
+                                        <label for="add_geo_@a.Id" class="m-0 flex-grow-1 d-flex align-center justify-between gap-2" style="cursor:pointer">
+                                            <div>
+                                                <strong style="font-size:0.9rem">@a.NameAr</strong>
+                                                <span class="text-secondary" style="font-size:0.8rem">(@a.Code)</span>
+                                                @if (!string.IsNullOrEmpty(a.ParentAreaNameAr))
+                                                {
+                                                    <span class="text-muted" style="font-size:0.75rem">— تابع لـ @a.ParentAreaNameAr</span>
+                                                }
+                                            </div>
+                                            <span class="badge badge-info" style="font-size:0.7rem">@GetAreaKindAr(a.AreaKind)</span>
+                                        </label>
+                                    </div>
+                                }
+                            }
+                        </div>
+                    </div>
+
+                    @* 5. تقييد أنواع الدعاوى المنظورة حصرياً حسب الدائرة المختارة *@
+                    <div class="form-group mb-3">
+                        <div class="d-flex justify-between align-center mb-1">
+                            <label class="form-label fw-bold mb-0" style="color:var(--brand-primary)">
+                                ⚖️ أنواع الدعاوى المصرح بنظرها في هذه الجلسة (مقيدة حصرياً بنوع الدائرة المختارة):
+                            </label>
+                            <div class="d-flex gap-1">
+                                <button type="button" class="btn btn-xs btn-outline-primary" @onclick="SelectAllAllowedCaseTypes" style="font-size:0.7rem">
+                                    تحديد الكل
+                                </button>
+                                <button type="button" class="btn btn-xs btn-outline-secondary" @onclick="DeselectAllCaseTypes" style="font-size:0.7rem">
+                                    إلغاء التحديد
+                                </button>
+                            </div>
+                        </div>
+                        <div class="p-2 border rounded" style="max-height: 180px; overflow-y: auto; background: var(--surface-hover);">
+                            @if (allowedCaseTypesForSelectedCircuit.Count == 0)
+                            {
+                                <div class="text-muted-color">لا توجد أنواع دعاوى مرتبطة بنوع هذه الدائرة.</div>
+                            }
+                            else
+                            {
+                                @foreach (var ct in allowedCaseTypesForSelectedCircuit)
+                                {
+                                    <div class="d-flex align-center gap-2 mb-1">
+                                        <input type="checkbox" id="ct_@ct.Id"
+                                               checked="@sessionModel.SelectedCaseTypeIds.Contains(ct.Id)"
+                                               @onchange="(e) => ToggleSessionCaseType(ct.Id, e)" />
+                                        <label for="ct_@ct.Id" class="m-0" style="cursor:pointer">
+                                            <strong>@ct.NameAr</strong>
+                                            <span class="text-secondary" style="font-size:0.8rem">(@ct.Code)</span>
+                                        </label>
+                                    </div>
+                                }
+                            }
+                        </div>
+                    </div>
+
+                    @* 6. سكرتير الجلسة (اختياري - بحث، ربط، تبديل، حذف) *@
+                    <div class="form-group mb-3 p-3 border rounded" style="background:var(--surface-ground, #f8fafc);">
+                        <label class="form-label fw-bold d-flex align-center justify-between mb-2" style="color:var(--brand-primary)">
+                            <span>👨‍💼 سكرتير الجلسة (أمين السر) <span class="text-secondary fw-normal font-monospace" style="font-size:0.8rem">(اختياري)</span></span>
+                            @if (sessionModel.EmployeeId.HasValue)
+                            {
+                                <span class="badge badge-success">تم ربط سكرتير</span>
+                            }
+                            else
+                            {
+                                <span class="badge badge-secondary">لم يُحدد سكرتير</span>
+                            }
+                        </label>
+
+                        @if (sessionModel.EmployeeId.HasValue && !isSearchingSecretaryInAdd)
+                        {
+                            <div class="d-flex align-center justify-between p-2 rounded border bg-white shadow-sm">
+                                <div class="d-flex align-center gap-2">
+                                    <span style="font-size:1.4rem">👨‍💼</span>
+                                    <div>
+                                        <strong class="text-primary" style="font-size:0.95rem">@sessionModel.SelectedEmployeeName</strong>
+                                        <div class="text-secondary" style="font-size:0.8rem">سكرتير الجلسة المكلف</div>
+                                    </div>
+                                </div>
+                                <div class="d-flex gap-2">
+                                    <button type="button" class="btn btn-sm btn-outline-primary" @onclick="StartChangeSecretaryInAdd" title="تبديل واختيار سكرتير آخر">
+                                        🔄 تبديل
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" @onclick="RemoveSecretaryFromAdd" title="حذف الربط">
+                                        🗑️ حذف
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                        else
+                        {
+                            <div>
+                                <div class="d-flex gap-2 mb-2">
+                                    <input type="text" class="form-control form-control-sm"
+                                           placeholder="🔍 ابحث عن الموظف بالاسم أو الكود..."
+                                           @bind="sessionSecretarySearchTerm" @bind:event="oninput" />
+                                    @if (sessionModel.EmployeeId.HasValue)
+                                    {
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => isSearchingSecretaryInAdd = false">
+                                            إلغاء التبديل
+                                        </button>
+                                    }
+                                </div>
+
+                                <div class="border rounded bg-white" style="max-height:160px; overflow-y:auto;">
+                                    @{
+                                        var matchingEmps = GetFilteredSecretaries(sessionSecretarySearchTerm).ToList();
+                                    }
+                                    @if (matchingEmps.Count == 0)
+                                    {
+                                        <div class="text-muted text-center p-2" style="font-size:0.85rem">
+                                            @(string.IsNullOrWhiteSpace(sessionSecretarySearchTerm) ? "اكتب اسم الموظف أو الكود للبحث..." : "لا يوجد موظف مطابق للبحث")
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        @foreach (var emp in matchingEmps)
+                                        {
+                                            <div class="d-flex align-center justify-between p-2 border-bottom hover-bg"
+                                                 style="cursor:pointer;"
+                                                 @onclick="() => SelectSecretaryForAdd(emp)">
+                                                <div>
+                                                    <span class="badge bg-secondary font-monospace me-1">@emp.Code</span>
+                                                    <strong>@emp.FullNameAr</strong>
+                                                    <span class="text-muted ms-1" style="font-size:0.8rem">(@(emp.JobTitle ?? "أمين سر"))</span>
+                                                    @if (!string.IsNullOrEmpty(emp.CourtUnitNameAr))
+                                                    {
+                                                        <span class="text-secondary ms-2" style="font-size:0.75rem">— @emp.CourtUnitNameAr</span>
+                                                    }
+                                                </div>
+                                                <button type="button" class="btn btn-xs btn-primary">
+                                                    اختيار ➕
+                                                </button>
+                                            </div>
+                                        }
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseModals">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">حفظ الجلسة</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@* ==================== مودال تعديل جلسة ==================== *@
+@if (showEditSessionModal && editingSessionModel is not null)
+{
+    <div class="modal-backdrop" @onclick="CloseModals">
+        <div class="modal" style="max-width: 650px;" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">✏️ تعديل بيانات واختصاص الجلسة: @editingSessionModel.Code</span>
+                <button class="modal-close" @onclick="CloseModals">✕</button>
+            </div>
+            <EditForm Model="editingSessionModel" OnValidSubmit="HandleUpdateSession">
+                <div class="modal-body">
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> اسم الجلسة</label>
+                        <InputText class="form-control" @bind-Value="editingSessionModel.NameAr" required />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">جدول وميعاد الانعقاد</label>
+                        <InputText class="form-control" @bind-Value="editingSessionModel.ScheduleDescription" placeholder="مثال: السبت أسبوع 1 و 3" />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">تفاصيل ووصف الجلسة القياسي (اليوم - النوع - الاختصاص المكاني - اختصار الدائرة)</label>
+                        <InputText class="form-control" @bind-Value="editingSessionModel.Description" placeholder="مثال: السبت - مدني كلي - محافظة بني سويف - د1" />
+                        <span class="text-secondary" style="font-size:0.75rem">الصيغة المعتمدة: [اليوم] - [النوع أو الدعاوى] - [الاختصاص المكاني] - [د1، د2]</span>
+                    </div>
+
+                    <div class="form-group mb-3 p-2 border rounded" style="background:var(--surface-hover);">
+                        <div class="d-flex align-center gap-2">
+                            <input type="checkbox" id="editSessionShowProgress" @bind="editingSessionModel.ShowInProgressReport" style="width:18px;height:18px;cursor:pointer" />
+                            <label for="editSessionShowProgress" class="m-0 fw-semibold" style="cursor:pointer">
+                                📊 ظهور الجلسة في كشف ونسبة إدخال الإحصائية الشهرية
+                            </label>
+                        </div>
+                        <div class="text-secondary mt-1" style="font-size:0.75rem">
+                            تظهر كافة الجلسات افتراضياً في تقرير نسبة الإدخال، عدا الجلسات الجنائية المستثناة كالعنف والبيئة والمرور والأمن... إلخ.
+                        </div>
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">حالة الجلسة</label>
+                        <div class="d-flex align-center gap-2">
+                            <input type="checkbox" id="editSessionActive" checked="@(!editingSessionModel.IsClosed)"
+                                   @onchange="(e) => editingSessionModel.IsClosed = !(bool)(e.Value ?? true)"
+                                   style="width:18px;height:18px" />
+                            <label for="editSessionActive" class="m-0 fw-semibold">
+                                @(!editingSessionModel.IsClosed ? "الجلسة نشطة ومتاحة لإدخال الإحصائيات" : "الجلسة معطلة / مغلقة")
+                            </label>
+                        </div>
+                    </div>
+
+                    @* تعديل النطاقات الجغرافية والاختصاص المكاني (تغطية نطاق أو أكثر) *@
+                    <div class="form-group mb-3">
+                        <div class="d-flex justify-between align-center mb-1">
+                            <label class="form-label fw-bold mb-0" style="color:var(--brand-primary)">
+                                📍 الاختصاص المكاني والنطاقات الجغرافية للجلسة: <span class="required">*</span>
+                            </label>
+                            <span class="badge @(editingSessionModel.SelectedGeographicAreaIds.Count > 0 ? "badge-primary" : "badge-warning")" style="font-size:0.75rem">
+                                @(editingSessionModel.SelectedGeographicAreaIds.Count > 0 ? $"تم اختيار {editingSessionModel.SelectedGeographicAreaIds.Count} نطاق" : "لم يتم الاختيار بعد")
+                            </span>
+                        </div>
+                        <div class="text-secondary mb-2" style="font-size:0.8rem">
+                            قد تغطي الجلسة نطاقاً جغرافياً واحداً أو أكثر (مثال: قسم أول وقسم ثانٍ، أو مركز وبندر معاً).
+                        </div>
+
+                        <div class="d-flex gap-2 mb-2 flex-wrap align-center">
+                            <input type="text" class="form-control form-control-sm" placeholder="🔍 تصفية النطاقات بالاسم أو الكود..."
+                                   style="max-width:210px;"
+                                   @bind="editSessionGeoSearchTerm" @bind:event="oninput" />
+
+                            <select class="form-control form-control-sm" style="max-width:130px;" @bind="editSessionGeoKindFilter">
+                                <option value="">كل الأنواع</option>
+                                <option value="Markaz">مراكز</option>
+                                <option value="PoliceStation">أقسام شرطة</option>
+                                <option value="City">مدن</option>
+                                <option value="District">أحياء</option>
+                                <option value="Governorate">محافظات</option>
+                            </select>
+
+                            <button type="button" class="btn btn-xs btn-outline-primary" @onclick="SelectAllFilteredEditSessionGeoAreas" title="تحديد جميع النطاقات المعروضة">
+                                ☑️ تحديد الكل
+                            </button>
+                            <button type="button" class="btn btn-xs btn-outline-secondary" @onclick="DeselectAllEditSessionGeoAreas" title="إلغاء تحديد كافة النطاقات">
+                                ✕ إلغاء التحديد
+                            </button>
+                        </div>
+
+                        @if (editingSessionModel.SelectedGeographicAreaIds.Count > 0)
+                        {
+                            <div class="p-2 mb-2 bg-light border rounded d-flex gap-1 flex-wrap align-center">
+                                <span class="text-secondary" style="font-size:0.75rem">المحدد:</span>
+                                @foreach (var aid in editingSessionModel.SelectedGeographicAreaIds)
+                                {
+                                    var area = activeGeoAreas.FirstOrDefault(a => a.Id == aid);
+                                    if (area != null)
+                                    {
+                                        <span class="badge badge-primary d-inline-flex align-center gap-1" style="font-size:0.78rem; padding:4px 8px;">
+                                            <span>📍 @area.NameAr</span>
+                                            <button type="button" class="btn btn-link p-0 text-white" style="line-height:1; font-size:0.8rem; text-decoration:none;" @onclick="() => RemoveEditSessionGeoArea(aid)" title="إزالة">✕</button>
+                                        </span>
+                                    }
+                                }
+                            </div>
+                        }
+
+                        <div class="p-2 border rounded" style="max-height: 180px; overflow-y: auto; background: var(--surface-hover);">
+                            @{
+                                var editDisplayedAreas = GetFilteredGeoAreas(editSessionGeoSearchTerm, editSessionGeoKindFilter);
+                            }
+                            @if (editDisplayedAreas.Count == 0)
+                            {
+                                <div class="text-muted-color" style="font-size:0.85rem">لا توجد نطاقات جغرافية نشطة مطابقة للبحث.</div>
+                            }
+                            else
+                            {
+                                @foreach (var a in editDisplayedAreas)
+                                {
+                                    var isChecked = editingSessionModel.SelectedGeographicAreaIds.Contains(a.Id);
+                                    <div class="d-flex align-center gap-2 mb-1 p-1 rounded" style="@(isChecked ? "background:rgba(13, 110, 253, 0.08);" : "")">
+                                        <input type="checkbox" id="edit_geo_@a.Id"
+                                               checked="@isChecked"
+                                               @onchange="(e) => ToggleEditSessionGeoArea(a.Id, e)"
+                                               style="width:16px;height:16px;cursor:pointer" />
+                                        <label for="edit_geo_@a.Id" class="m-0 flex-grow-1 d-flex align-center justify-between gap-2" style="cursor:pointer">
+                                            <div>
+                                                <strong style="font-size:0.9rem">@a.NameAr</strong>
+                                                <span class="text-secondary" style="font-size:0.8rem">(@a.Code)</span>
+                                                @if (!string.IsNullOrEmpty(a.ParentAreaNameAr))
+                                                {
+                                                    <span class="text-muted" style="font-size:0.75rem">— تابع لـ @a.ParentAreaNameAr</span>
+                                                }
+                                            </div>
+                                            <span class="badge badge-info" style="font-size:0.7rem">@GetAreaKindAr(a.AreaKind)</span>
+                                        </label>
+                                    </div>
+                                }
+                            }
+                        </div>
+                    </div>
+
+                    @* سكرتير الجلسة (اختياري - بحث، ربط، تبديل، حذف) *@
+                    <div class="form-group mb-3 p-3 border rounded" style="background:var(--surface-ground, #f8fafc);">
+                        <label class="form-label fw-bold d-flex align-center justify-between mb-2" style="color:var(--brand-primary)">
+                            <span>👨‍💼 سكرتير الجلسة (أمين السر) <span class="text-secondary fw-normal font-monospace" style="font-size:0.8rem">(اختياري)</span></span>
+                            @if (editingSessionModel.EmployeeId.HasValue)
+                            {
+                                <span class="badge badge-success">تم ربط سكرتير</span>
+                            }
+                            else
+                            {
+                                <span class="badge badge-secondary">لم يُحدد سكرتير</span>
+                            }
+                        </label>
+
+                        @if (editingSessionModel.EmployeeId.HasValue && !isSearchingSecretaryInEdit)
+                        {
+                            <div class="d-flex align-center justify-between p-2 rounded border bg-white shadow-sm">
+                                <div class="d-flex align-center gap-2">
+                                    <span style="font-size:1.4rem">👨‍💼</span>
+                                    <div>
+                                        <strong class="text-primary" style="font-size:0.95rem">@editingSessionModel.SelectedEmployeeName</strong>
+                                        <div class="text-secondary" style="font-size:0.8rem">@(editingSessionModel.SelectedEmployeeJobTitle ?? "أمين سر الجلسة")</div>
+                                    </div>
+                                </div>
+                                <div class="d-flex gap-2">
+                                    <button type="button" class="btn btn-sm btn-outline-primary" @onclick="StartChangeSecretaryInEdit" title="تبديل واختيار سكرتير آخر">
+                                        🔄 تبديل
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" @onclick="RemoveSecretaryFromEdit" title="حذف الربط">
+                                        🗑️ حذف
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                        else
+                        {
+                            <div>
+                                <div class="d-flex gap-2 mb-2">
+                                    <input type="text" class="form-control form-control-sm"
+                                           placeholder="🔍 ابحث عن الموظف بالاسم أو الكود..."
+                                           @bind="editSessionSecretarySearchTerm" @bind:event="oninput" />
+                                    @if (editingSessionModel.EmployeeId.HasValue)
+                                    {
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => isSearchingSecretaryInEdit = false">
+                                            إلغاء التبديل
+                                        </button>
+                                    }
+                                </div>
+
+                                <div class="border rounded bg-white" style="max-height:160px; overflow-y:auto;">
+                                    @{
+                                        var matchingEmps = GetFilteredSecretaries(editSessionSecretarySearchTerm).ToList();
+                                    }
+                                    @if (matchingEmps.Count == 0)
+                                    {
+                                        <div class="text-muted text-center p-2" style="font-size:0.85rem">
+                                            @(string.IsNullOrWhiteSpace(editSessionSecretarySearchTerm) ? "اكتب اسم الموظف أو الكود للبحث..." : "لا يوجد موظف مطابق للبحث")
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        @foreach (var emp in matchingEmps)
+                                        {
+                                            <div class="d-flex align-center justify-between p-2 border-bottom hover-bg"
+                                                 style="cursor:pointer;"
+                                                 @onclick="() => SelectSecretaryForEdit(emp)">
+                                                <div>
+                                                    <span class="badge bg-secondary font-monospace me-1">@emp.Code</span>
+                                                    <strong>@emp.FullNameAr</strong>
+                                                    <span class="text-muted ms-1" style="font-size:0.8rem">(@(emp.JobTitle ?? "أمين سر"))</span>
+                                                    @if (!string.IsNullOrEmpty(emp.CourtUnitNameAr))
+                                                    {
+                                                        <span class="text-secondary ms-2" style="font-size:0.75rem">— @emp.CourtUnitNameAr</span>
+                                                    }
+                                                </div>
+                                                <button type="button" class="btn btn-xs btn-primary">
+                                                    اختيار ➕
+                                                </button>
+                                            </div>
+                                        }
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseModals">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">حفظ التعديلات</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@* ==================== مودال إضافة قاضٍ ==================== *@
+@if (showAddJudgeModal)
+{
+    <div class="modal-backdrop" @onclick="CloseModals">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">➕ إضافة قاضٍ جديد</span>
+                <button class="modal-close" @onclick="CloseModals">✕</button>
+            </div>
+            <EditForm Model="judgeModel" OnValidSubmit="HandleCreateJudge">
+                <div class="modal-body">
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> كود القاضي الفريد</label>
+                        <InputText class="form-control" @bind-Value="judgeModel.Code" placeholder="مثال: J-101" required />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> الاسم الرباعي بالعربية (يمنع التكرار)</label>
+                        <InputText class="form-control" @bind-Value="judgeModel.FullNameAr" placeholder="الاسم الرباعي الرسمي" required />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> المحكمة المنشئة المسؤولة عن تسجيل القاضي</label>
+                        @if (isUserAdmin)
+                        {
+                            <InputSelect class="form-control" @bind-Value="judgeModel.CreatedCourtUnitId" required>
+                                <option value="">-- اختر المحكمة الابتدائية --</option>
+                                @if (courts is not null)
+                                {
+                                    @foreach (var c in courts.Where(c => c.ParentCourtUnitId == null || c.UnitKind == "Court"))
+                                    {
+                                        <option value="@c.Id">🏛️ @c.NameAr</option>
+                                    }
+                                }
+                            </InputSelect>
+                            <small class="text-secondary">بصفتك مدير النظام العام، يمكنك اختيار المحكمة الابتدائية المنشئة.</small>
+                        }
+                        else
+                        {
+                            <input type="text" class="form-control" value="🏛️ @currentUserCourtName (محكمتك المسندة)" disabled />
+                            <small class="text-secondary">تسجيل القاضي يتم حصرياً بالمحكمة الابتدائية التي تديرها وفقاً لقواعد الحوكمة.</small>
+                        }
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseModals">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">حفظ القاضي</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@* ==================== مودال تعديل قاضٍ ==================== *@
+@if (showEditJudgeModal && editingJudgeModel is not null)
+{
+    <div class="modal-backdrop" @onclick="CloseModals">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">✏️ تعديل بيانات القاضي: @editingJudgeModel.FullNameAr</span>
+                <button class="modal-close" @onclick="CloseModals">✕</button>
+            </div>
+            <EditForm Model="editingJudgeModel" OnValidSubmit="HandleUpdateJudge">
+                <div class="modal-body">
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> كود القاضي</label>
+                        <InputText class="form-control" @bind-Value="editingJudgeModel.Code" required />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> الاسم الرباعي بالعربية (يمنع التكرار)</label>
+                        <InputText class="form-control" @bind-Value="editingJudgeModel.FullNameAr" required />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">المحكمة المنشئة (للقراءة فقط)</label>
+                        <input type="text" class="form-control" value="@(editingJudgeModel.CreatedCourtUnitNameAr ?? "المركز العام")" disabled />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">الحالة</label>
+                        <InputSelect class="form-control" @bind-Value="editingJudgeModel.IsActive">
+                            <option value="true">نشط وعلى رأس العمل</option>
+                            <option value="false">معطل</option>
+                        </InputSelect>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseModals">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">حفظ التعديلات</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@* ==================== مودال إضافة موظف جديد ==================== *@
+@if (showAddEmployeeModal)
+{
+    <div class="modal-backdrop" @onclick="CloseModals">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">➕ إضافة موظف جديد (أمين سر / كاتب جلسة)</span>
+                <button class="modal-close" @onclick="CloseModals">✕</button>
+            </div>
+            <EditForm Model="employeeModel" OnValidSubmit="HandleCreateEmployee">
+                <div class="modal-body">
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> كود الموظف الفريد</label>
+                        <div class="d-flex gap-2">
+                            <InputText class="form-control" @bind-Value="employeeModel.Code" placeholder="مثال: EMP-001" required />
+                            <button type="button" class="btn btn-outline-secondary" @onclick="AutoGenerateEmployeeCode" title="توليد كود تلقائي">🔄 تلقائي</button>
+                        </div>
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> الاسم الكامل بالعربية</label>
+                        <InputText class="form-control" @bind-Value="employeeModel.FullNameAr" placeholder="الاسم الرباعي الرسمي" required />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">المسمى الوظيفي</label>
+                        <InputText class="form-control" @bind-Value="employeeModel.JobTitle" placeholder="مثال: أمين سر جلسة / كاتب تحقيق" />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">المحكمة أو المأمورية التابع لها</label>
+                        <InputSelect class="form-control" @bind-Value="employeeModel.CourtUnitId">
+                            <option value="">-- عام على مستوى المحكمة الابتدائية --</option>
+                            @if (courts is not null)
+                            {
+                                @foreach (var c in courts)
+                                {
+                                    <option value="@c.Id">@c.NameAr</option>
+                                }
+                            }
+                        </InputSelect>
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">رقم الهاتف المحمول</label>
+                        <InputText class="form-control" @bind-Value="employeeModel.PhoneNumber" placeholder="مثال: 01012345678" />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">الرقم القومي (14 رقم)</label>
+                        <InputText class="form-control" @bind-Value="employeeModel.NationalId" placeholder="14 رقم قومي" />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <div class="d-flex align-center gap-2">
+                            <input type="checkbox" id="empActive" @bind="employeeModel.IsActive" style="width:18px;height:18px" />
+                            <label for="empActive" class="m-0 fw-semibold">الموظف على رأس العمل ونشط</label>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseModals">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">حفظ الموظف</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@* ==================== مودال تعديل موظف ==================== *@
+@if (showEditEmployeeModal)
+{
+    <div class="modal-backdrop" @onclick="CloseModals">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">✏️ تعديل بيانات الموظف: @editingEmployeeModel.FullNameAr</span>
+                <button class="modal-close" @onclick="CloseModals">✕</button>
+            </div>
+            <EditForm Model="editingEmployeeModel" OnValidSubmit="HandleUpdateEmployee">
+                <div class="modal-body">
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> كود الموظف</label>
+                        <InputText class="form-control" @bind-Value="editingEmployeeModel.Code" required />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> الاسم الكامل بالعربية</label>
+                        <InputText class="form-control" @bind-Value="editingEmployeeModel.FullNameAr" required />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">المسمى الوظيفي</label>
+                        <InputText class="form-control" @bind-Value="editingEmployeeModel.JobTitle" />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">المحكمة أو المأمورية التابع لها</label>
+                        <InputSelect class="form-control" @bind-Value="editingEmployeeModel.CourtUnitId">
+                            <option value="">-- عام على مستوى المحكمة الابتدائية --</option>
+                            @if (courts is not null)
+                            {
+                                @foreach (var c in courts)
+                                {
+                                    <option value="@c.Id">@c.NameAr</option>
+                                }
+                            }
+                        </InputSelect>
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">رقم الهاتف المحمول</label>
+                        <InputText class="form-control" @bind-Value="editingEmployeeModel.PhoneNumber" />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">الرقم القومي</label>
+                        <InputText class="form-control" @bind-Value="editingEmployeeModel.NationalId" />
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <div class="d-flex align-center gap-2">
+                            <input type="checkbox" id="editEmpActive" @bind="editingEmployeeModel.IsActive" style="width:18px;height:18px" />
+                            <label for="editEmpActive" class="m-0 fw-semibold">الموظف على رأس العمل ونشط</label>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseModals">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">حفظ التعديلات</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@* ==================== مودال تكليف قاضٍ بدائرة ==================== *@
+@if (showAssignJudgeModal)
+{
+    <div class="modal-backdrop" @onclick="CloseModals">
+        <div class="modal" style="max-width: 620px;" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">➕ تكليف قاضٍ بدائرة قضائية</span>
+                <button class="modal-close" @onclick="CloseModals">✕</button>
+            </div>
+            <EditForm Model="assignModel" OnValidSubmit="HandleAssignJudge">
+                <div class="modal-body">
+                    @* 1. فلترة الدوائر بالمحكمة *@
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> المحكمة أو المأمورية</label>
+                        <select class="form-control" value="@assignCourtId" @onchange="OnAssignCourtChanged">
+                            @if (courts is not null)
+                            {
+                                @foreach (var c in courts)
+                                {
+                                    <option value="@c.Id">@c.NameAr</option>
+                                }
+                            }
+                        </select>
+                    </div>
+
+                    @* 2. اختيار الدائرة القضائية *@
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> الدائرة القضائية</label>
+                        <select class="form-control" value="@assignModel.CircuitId" @onchange="OnAssignCircuitChanged">
+                            @foreach (var c in availableCircuitsForAssignModal)
+                            {
+                                <option value="@c.Id">@c.NameAr (@c.Code) - @GetCircuitLevelShortName(c.CircuitKind)</option>
+                            }
+                        </select>
+                    </div>
+
+                    @* 3. البحث باسم القاضي نظراً لكثرة الأسماء *@
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> اختيار القاضي المكلف</label>
+                        <input type="text" class="form-control form-control-sm mb-1"
+                               placeholder="🔍 اكتب اسم القاضي للتصفية الفورية..."
+                               @bind="assignJudgeSearchTerm" @bind:event="oninput" />
+                        <InputSelect class="form-control" @bind-Value="assignModel.JudgeId" required>
+                            <option value="">-- اختر القاضي من القائمة --</option>
+                            @foreach (var j in filteredAssignJudges)
+                            {
+                                <option value="@j.Id">@j.FullNameAr (@j.Code)</option>
+                            }
+                        </InputSelect>
+                    </div>
+
+                    @* 4. الصفة القضائية مقيدة بنصاب الدائرة *@
+                    <div class="form-group mb-3">
+                        <label class="form-label"><span class="required">*</span> الصفة القضائية بالتشكيل</label>
+                        <InputSelect class="form-control" @bind-Value="assignModel.JudicialRoleId" required>
+                            @foreach (var r in allowedJudicialRolesForSelectedCircuit)
+                            {
+                                <option value="@r.Id">@r.NameAr</option>
+                            }
+                        </InputSelect>
+                        <small class="text-secondary">
+                            @if (isSelectedCircuitPartial)
+                            {
+                                <span>⚠️ دائرة جزئية فردية: الصفة المتاحة نظامياً هي (رئيس الدائرة) فقط.</span>
+                            }
+                            else
+                            {
+                                <span>تشكيل كلي (3 قضاة فأكثر): متاح رئيس الدائرة والأعضاء اليمين واليسار حتى العضو السادس.</span>
+                            }
+                        </small>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseModals">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">حفظ التكليف</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@* ==================== مودال الرصيد الافتتاحي للجلسة (أول العام القضائي) ==================== *@
+@if (showSessionOpeningBalanceModal && selectedSessionForOpeningBalance is not null)
+{
+    <div class="modal-backdrop" @onclick="CloseModals">
+        <div class="modal modal-lg" @onclick:stopPropagation style="max-width: 820px; max-height: 90vh; display: flex; flex-direction: column;">
+            <div class="modal-header">
+                <div>
+                    <span class="modal-title">💰 الرصيد الافتتاحي للجلسة أول العام القضائي</span>
+                    <span class="text-secondary" style="font-size:0.85rem;display:block">
+                        الجلسة: <strong>@selectedSessionForOpeningBalance.NameAr</strong> — الدائرة: <strong>@selectedSessionForOpeningBalance.CircuitNameAr</strong>
+                    </span>
+                </div>
+                <button class="modal-close" @onclick="CloseModals">✕</button>
+            </div>
+            
+            <div class="modal-body" style="overflow-y: auto; flex: 1;">
+                <div class="alert alert-info py-2 px-3 mb-3" style="font-size:0.85rem; line-height: 1.6; border-right: 4px solid #0284c7; background-color: #f0f9ff; color: #0369a1;">
+                    ⚖️ <strong>حسب القاعدتين 33 و 34 من قواعد الحوكمة القضائية:</strong>
+                    <br />
+                    • يُسجل الرصيد الافتتاحي للجلسة حصرياً أول كل عام قضائي مع تشكيل الدوائر والجلسات.
+                    <br />
+                    • يُعتمد عليه بنسبة 100% في تحديد (السابق) لشهر أكتوبر (بداية العام)، وتعتمد عليه تقارير الجرد السنوي.
+                    <br />
+                    • مؤجلات العام القضائي السابق معزولة تماماً ولا تتداخل مع هذا الرصيد أو مع أشهر العام الجديد.
+                </div>
+
+                @if (isLoadingOpeningBalances)
+                {
+                    <div style="text-align:center; padding: 2.5rem 0;">
+                        <div class="spinner mb-2"></div>
+                        <div class="text-muted">جاري تحميل شرائح الرصيد الافتتاحي للجلسة...</div>
+                    </div>
+                }
+                else if (sessionOpeningBalanceItems.Count == 0)
+                {
+                    <div class="alert alert-warning text-center">
+                        ⚠️ لا توجد شرائح سنوات قيد أو أنواع قضايا مهيأة لهذه الجلسة للعام القضائي المحدد. يرجى مراجعة إعدادات أنواع القضايا وسياسات الشرائح في شاشة القواعد.
+                    </div>
+                }
+                else
+                {
+                    @if (DistinctOpeningBalanceCaseTypes.Count() > 1)
+                    {
+                        <div class="d-flex align-center justify-between mb-3 gap-2 flex-wrap">
+                            <div class="d-flex align-center gap-2">
+                                <label class="form-label m-0 fw-bold" style="white-space:nowrap">تصفية حسب نوع القضية:</label>
+                                <select class="form-control form-control-sm" style="min-width: 200px;" @bind="openingBalanceCaseTypeFilter">
+                                    <option value="">-- عرض كل أنواع القضايا (@sessionOpeningBalanceItems.Count شريحة) --</option>
+                                    @foreach (var ct in DistinctOpeningBalanceCaseTypes)
+                                    {
+                                        <option value="@ct">@ct</option>
+                                    }
+                                </select>
+                            </div>
+                            <div class="badge badge-info" style="font-size:0.85rem; padding: 0.4rem 0.8rem;">
+                                إجمالي كل الشرائح: @sessionOpeningBalanceItems.Sum(i => i.Count) قضية
+                            </div>
+                        </div>
+                    }
+
+                    <div class="table-container mb-3" style="max-height: 420px; overflow-y: auto;">
+                        <table class="table table-bordered table-hover mb-0">
+                            <thead style="position: sticky; top: 0; background: var(--cs-navy, #1e293b); color: white; z-index: 2;">
+                                <tr>
+                                    <th style="width: 45%;">نوع القضية</th>
+                                    <th style="width: 30%;">شريحة سنة القيد</th>
+                                    <th style="width: 25%; text-align: center;">الرصيد الافتتاحي (قضية)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var item in FilteredOpeningBalanceItems)
+                                {
+                                    <tr>
+                                        <td class="fw-semibold">@item.CaseTypeNameAr</td>
+                                        <td>
+                                            <span class="badge badge-secondary" style="font-size:0.8rem">
+                                                @item.CaseYearBandLabelAr
+                                            </span>
+                                        </td>
+                                        <td style="text-align: center;">
+                                            <input type="number" 
+                                                   class="form-control form-control-sm text-center fw-bold" 
+                                                   min="0"
+                                                   style="width: 110px; margin: 0 auto; background-color: #f8fafc;"
+                                                   @bind="item.Count" />
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                            <tfoot style="position: sticky; bottom: 0; background: #f1f5f9; font-weight: bold; border-top: 2px solid #cbd5e1;">
+                                <tr>
+                                    <td colspan="2" style="text-align: left; padding-left: 1rem;">
+                                        @(string.IsNullOrWhiteSpace(openingBalanceCaseTypeFilter) ? "إجمالي الرصيد الافتتاحي لكافة الأنواع:" : $"مجموع رصيد ({openingBalanceCaseTypeFilter}):")
+                                    </td>
+                                    <td style="text-align: center; color: var(--cs-primary, #0369a1); font-size: 1.1rem;">
+                                        @FilteredOpeningBalanceItems.Sum(i => i.Count)
+                                    </td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                }
+            </div>
+
+            <div class="modal-footer d-flex justify-between align-center">
+                <div class="text-muted" style="font-size:0.85rem">
+                    إجمالي الرصيد الافتتاحي للجلسة: <strong class="text-primary" style="font-size:1rem">@sessionOpeningBalanceItems.Sum(i => i.Count)</strong> قضية
+                </div>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseModals">إلغاء</button>
+                    <button type="button" class="btn btn-primary" @onclick="HandleSaveSessionOpeningBalances" disabled="@(isSubmitting || isLoadingOpeningBalances || sessionOpeningBalanceItems.Count == 0)">
+                        @(isSubmitting ? "جاري الحفظ..." : "💾 حفظ الرصيد الافتتاحي")
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    private long currentUserId = 1;
+    private string activeTab = "formation-view";
+
+    // Lookups
+    private List<JudicialYearDto>? years;
+    private List<StatisticalPeriodDto>? periods;
+    private List<JudicialStatistics.Application.Courts.CourtUnitDto>? courts;
+    private List<CircuitDto>? circuits;
+    private List<SessionDto>? sessions;
+    private List<JudgeDto>? judges;
+    private List<JudgeDto>? allActiveJudgesForAssign;
+    private List<EmployeeDto>? employeesList;
+    private List<JudicialRoleDto>? judicialRoles;
+    private List<CircuitJudgeAssignmentDto>? assignments;
+
+    // Formation View Filters
+    private long selectedYearId;
+    private long selectedPeriodId;
+    private string selectedDiscipline = StatisticalDisciplines.Civil;
+    private long selectedCourtId;
+    private long selectedCircuitId;
+
+    private List<JudicialStatistics.Application.Courts.CourtUnitDto>? filteredCourts;
+    private List<CircuitDto>? filteredCircuits;
+    private CircuitFormationFullViewDto? currentFormation;
+
+    private bool isLoadingCourts = false;
+    private bool isLoadingCircuits = false;
+    private bool isLoadingFormation = false;
+
+    // Filters in Tabs
+    private string circuitSearchTerm = "";
+    private long selectedCircuitCourtFilter = 0;
+    private string selectedCircuitKindFilter = "";
+
+    private string sessionSearchTerm = "";
+    private long selectedSessionCourtFilter = 0;
+    private long selectedSessionCircuitFilter = 0;
+
+    private string judgeSearchFilter = "";
+    private long selectedJudgeCourtFilter = 0;
+    private string selectedJudgeStatusFilter = "all";
+
+    private string employeeSearchTerm = "";
+    private long selectedEmployeeCourtFilter = 0;
+    private string selectedEmployeeStatusFilter = "all";
+
+    // Modals
+    private bool showAddCircuitModal = false;
+    private bool showAddSessionModal = false;
+    private bool showEditSessionModal = false;
+    private bool showAddJudgeModal = false;
+    private bool showEditJudgeModal = false;
+    private bool showAddEmployeeModal = false;
+    private bool showEditEmployeeModal = false;
+    private bool showAssignJudgeModal = false;
+    private bool showSessionOpeningBalanceModal = false;
+    private bool isLoadingOpeningBalances = false;
+    private SessionDto? selectedSessionForOpeningBalance;
+    private long selectedSessionVersionId;
+    private string openingBalanceCaseTypeFilter = "";
+    private List<SessionOpeningBalanceItem> sessionOpeningBalanceItems = new();
+
+    private IEnumerable<SessionOpeningBalanceItem> FilteredOpeningBalanceItems =>
+        string.IsNullOrWhiteSpace(openingBalanceCaseTypeFilter)
+            ? sessionOpeningBalanceItems
+            : sessionOpeningBalanceItems.Where(i => i.CaseTypeNameAr == openingBalanceCaseTypeFilter);
+
+    private IEnumerable<string> DistinctOpeningBalanceCaseTypes =>
+        sessionOpeningBalanceItems.Select(i => i.CaseTypeNameAr).Distinct();
+    private bool isSubmitting = false;
+    private string? statusMessage;
+    private bool isError = false;
+
+    private long? currentUserCourtId;
+    private string currentUserCourtName = "";
+    private bool isUserAdmin = false;
+
+    private List<GeographicAreaDto> activeGeoAreas = new();
+    private List<JudicialStatistics.Domain.Cases.CaseType> allCaseTypes = new();
+
+    // Session Modal State
+    private long sessionCourtUnitId;
+    private string sessionGeoSearchTerm = "";
+    private string sessionGeoKindFilter = "";
+    private string sessionSecretarySearchTerm = "";
+    private bool isSearchingSecretaryInAdd = false;
+    private string editSessionGeoSearchTerm = "";
+    private string editSessionGeoKindFilter = "";
+    private string editSessionSecretarySearchTerm = "";
+    private bool isSearchingSecretaryInEdit = false;
+
+    // Assign Modal State
+    private long assignCourtId;
+    private string assignJudgeSearchTerm = "";
+
+    private CircuitFormModel circuitModel = new();
+    private SessionFormModel sessionModel = new();
+    private SessionEditFormModel? editingSessionModel;
+    private JudgeFormModel judgeModel = new();
+    private JudgeEditFormModel editingJudgeModel = new();
+    private EmployeeFormModel employeeModel = new();
+    private EmployeeEditFormModel editingEmployeeModel = new();
+    private AssignFormModel assignModel = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ResolveCurrentUserIdAsync();
+
+        years = await YearsService.GetYearsAsync();
+        courts = await CourtsService.GetFlatAsync(true);
+        allActiveJudgesForAssign = await OrgService.GetJudgesAsync(true);
+        judicialRoles = await OrgService.GetJudicialRolesAsync();
+        activeGeoAreas = await OrgService.GetGeographicAreasAsync(activeOnly: true);
+        employeesList = await OrgService.GetEmployeesAsync(null, null, false);
+        await OrgService.GetDisciplinesAsync();
+
+        using (var scope = ScopeFactory.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<JudicialStatistics.Infrastructure.Persistence.JudicialDbContext>();
+            allCaseTypes = await db.CaseTypes.AsNoTracking().OrderBy(ct => ct.Code).ToListAsync();
+        }
+
+        if (currentUserCourtId.HasValue)
+        {
+            var c = courts?.FirstOrDefault(x => x.Id == currentUserCourtId.Value);
+            currentUserCourtName = c?.NameAr ?? CourtState.SelectedPrimaryCourtName;
+        }
+        else
+        {
+            currentUserCourtName = CourtState.SelectedPrimaryCourtName;
+        }
+
+        if (years.Count > 0)
+        {
+            var active = years.FirstOrDefault(y => y.Status == "Active") ?? years.First();
+            selectedYearId = active.Id;
+            periods = await YearsService.GetPeriodsForYearAsync(selectedYearId);
+            if (periods.Count > 0)
+            {
+                selectedPeriodId = periods.First().Id;
+            }
+
+            await LoadYearDataAsync(selectedYearId);
+            await LoadCourtsCascadeAsync();
+        }
+    }
+
+    private async Task ResolveCurrentUserIdAsync()
+    {
+        try
+        {
+            if (AuthState != null)
+            {
+                var auth = await AuthState;
+                var user = auth.User;
+                if (user.Identity?.IsAuthenticated == true)
+                {
+                    await CourtState.EnsureInitializedAsync(user);
+                    if (CourtState.CurrentAppUserId > 0)
+                    {
+                        currentUserId = CourtState.CurrentAppUserId;
+                    }
+
+                    var sub = user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+                    var email = user.Identity.Name;
+
+                    using var scope = ScopeFactory.CreateScope();
+                    var db = scope.ServiceProvider.GetRequiredService<JudicialStatistics.Infrastructure.Persistence.JudicialDbContext>();
+                    var appUser = await db.AppUsers.FirstOrDefaultAsync(u => u.IdentitySubject == sub || u.Email == email);
+                    if (appUser != null)
+                    {
+                        currentUserId = appUser.Id;
+                        var grant = await db.UserCourtGrants.FirstOrDefaultAsync(g => g.UserId == appUser.Id && g.IsActive);
+                        if (grant != null)
+                        {
+                            currentUserCourtId = grant.CourtUnitId;
+                        }
+                    }
+                    isUserAdmin = CourtState.IsSystemAdmin || user.IsInRole("Admin") || user.IsInRole("SuperAdmin") || (email != null && email.Contains("admin"));
+                }
+            }
+        }
+        catch
+        {
+            currentUserId = 1;
+        }
+    }
+
+
+    private async Task LoadYearDataAsync(long yearId)
+    {
+        circuits = await OrgService.GetCircuitsAsync(yearId, null, currentUserId);
+        sessions = await OrgService.GetSessionsAsync(null, yearId, currentUserId);
+        judges = await OrgService.GetJudgesAsync(false, yearId, currentUserId);
+        assignments = await OrgService.GetAssignmentsForYearAsync(yearId, currentUserId);
+        employeesList = await OrgService.GetEmployeesAsync(null, null, false);
+    }
+
+    private void SetTab(string tab) => activeTab = tab;
+
+    // ========== Formation View Cascading ==========
+
+    private async Task OnDisciplineSelected(string disciplineCode)
+    {
+        if (selectedDiscipline == disciplineCode) return;
+        selectedDiscipline = disciplineCode;
+        await LoadCourtsCascadeAsync();
+    }
+
+    private async Task OnYearFilterChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var yId))
+        {
+            selectedYearId = yId;
+            periods = await YearsService.GetPeriodsForYearAsync(yId);
+            selectedPeriodId = periods.FirstOrDefault()?.Id ?? 0;
+            await LoadYearDataAsync(yId);
+            await LoadCourtsCascadeAsync();
+        }
+    }
+
+    private async Task OnPeriodFilterChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var pId))
+        {
+            selectedPeriodId = pId;
+            if (selectedCircuitId > 0)
+            {
+                await LoadCircuitFormationAsync(selectedCircuitId);
+            }
+        }
+    }
+
+    private async Task OnCourtFilterChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var cId))
+        {
+            selectedCourtId = cId;
+            await LoadCircuitsCascadeAsync();
+        }
+    }
+
+    private async Task OnCircuitFilterChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var cirId))
+        {
+            selectedCircuitId = cirId;
+            await LoadCircuitFormationAsync(cirId);
+        }
+    }
+
+    private async Task LoadCourtsCascadeAsync()
+    {
+        isLoadingCourts = true;
+        selectedCourtId = 0;
+        selectedCircuitId = 0;
+        currentFormation = null;
+
+        try
+        {
+            filteredCourts = await OrgService.GetAuthorizedCourtsForDisciplineAsync(selectedYearId, selectedDiscipline, currentUserId);
+            if (filteredCourts.Count > 0)
+            {
+                selectedCourtId = filteredCourts[0].Id;
+                await LoadCircuitsCascadeAsync();
+            }
+            else
+            {
+                filteredCircuits = new();
+            }
+        }
+        finally
+        {
+            isLoadingCourts = false;
+        }
+    }
+
+    private async Task LoadCircuitsCascadeAsync()
+    {
+        isLoadingCircuits = true;
+        selectedCircuitId = 0;
+        currentFormation = null;
+
+        try
+        {
+            if (selectedCourtId > 0)
+            {
+                filteredCircuits = await OrgService.GetAuthorizedCircuitsForDisciplineAsync(selectedYearId, selectedCourtId, selectedDiscipline, currentUserId);
+                if (filteredCircuits.Count > 0)
+                {
+                    selectedCircuitId = filteredCircuits[0].Id;
+                    await LoadCircuitFormationAsync(selectedCircuitId);
+                }
+            }
+            else
+            {
+                filteredCircuits = new();
+            }
+        }
+        finally
+        {
+            isLoadingCircuits = false;
+        }
+    }
+
+    private async Task LoadCircuitFormationAsync(long circuitId)
+    {
+        if (circuitId == 0)
+        {
+            currentFormation = null;
+            return;
+        }
+
+        isLoadingFormation = true;
+        try
+        {
+            currentFormation = await OrgService.GetCircuitFormationFullViewAsync(circuitId, selectedPeriodId > 0 ? selectedPeriodId : null);
+        }
+        finally
+        {
+            isLoadingFormation = false;
+        }
+    }
+
+    private string GetCircuitLevelDescription(string kind) => kind switch
+    {
+        "CivilFull" => "دائرة مدني كلي (نصاب 3 قضاة - تابعة لمأمورية كلية)",
+        "CriminalAppeal" => "دائرة جنح مستأنف (نصاب 3 قضاة - تابعة لمأمورية كلية)",
+        "Family" => "دائرة أسرة (نصاب 3 قضاة - تابعة لمحكمة الأسرة)",
+        "Labor" => "دائرة عمالية (نصاب 3 قضاة - تابعة للمحكمة العمالية)",
+        "Partial" or "Summary" => "دائرة جزئية (قاضٍ فردي واحد - تابعة لمحكمة جزئية)",
+        _ => kind
+    };
+
+    private string GetCircuitLevelShortName(string kind) => kind switch
+    {
+        "CivilFull" => "مدني كلي",
+        "CriminalAppeal" => "جنح مستأنف",
+        "Family" => "أسرة",
+        "Labor" => "عمال",
+        "Partial" or "Summary" => "جزئي",
+        _ => kind
+    };
+
+    // ========== Tab 2, 3, 4 Filtered Collections ==========
+
+    private List<CircuitDto> filteredCircuitsList
+    {
+        get
+        {
+            if (circuits == null) return new();
+            var q = circuits.AsEnumerable();
+            if (!string.IsNullOrWhiteSpace(circuitSearchTerm))
+            {
+                var t = circuitSearchTerm.Trim();
+                q = q.Where(c => c.NameAr.Contains(t, StringComparison.OrdinalIgnoreCase) || c.Code.Contains(t, StringComparison.OrdinalIgnoreCase));
+            }
+            if (selectedCircuitCourtFilter > 0)
+            {
+                q = q.Where(c => c.CourtUnitId == selectedCircuitCourtFilter);
+            }
+            if (!string.IsNullOrWhiteSpace(selectedCircuitKindFilter))
+            {
+                q = q.Where(c => c.CircuitKind == selectedCircuitKindFilter);
+            }
+            return q.ToList();
+        }
+    }
+
+    private List<SessionDto> filteredSessionsList
+    {
+        get
+        {
+            if (sessions == null) return new();
+            var q = sessions.AsEnumerable();
+            if (!string.IsNullOrWhiteSpace(sessionSearchTerm))
+            {
+                var t = sessionSearchTerm.Trim();
+                q = q.Where(s => s.NameAr.Contains(t, StringComparison.OrdinalIgnoreCase) 
+                              || s.Code.Contains(t, StringComparison.OrdinalIgnoreCase)
+                              || (!string.IsNullOrEmpty(s.Description) && s.Description.Contains(t, StringComparison.OrdinalIgnoreCase))
+                              || (!string.IsNullOrEmpty(s.EmployeeNameAr) && s.EmployeeNameAr.Contains(t, StringComparison.OrdinalIgnoreCase)));
+            }
+            if (selectedSessionCircuitFilter > 0)
+            {
+                q = q.Where(s => s.CircuitId == selectedSessionCircuitFilter);
+            }
+            else if (selectedSessionCourtFilter > 0 && circuits != null)
+            {
+                var courtCircuitIds = circuits.Where(c => c.CourtUnitId == selectedSessionCourtFilter).Select(c => c.Id).ToHashSet();
+                q = q.Where(s => courtCircuitIds.Contains(s.CircuitId));
+            }
+            return q.ToList();
+        }
+    }
+
+    private List<JudgeDto> filteredJudgesTabList
+    {
+        get
+        {
+            if (judges == null) return new();
+            var q = judges.AsEnumerable();
+            if (!string.IsNullOrWhiteSpace(judgeSearchFilter))
+            {
+                var t = judgeSearchFilter.Trim();
+                q = q.Where(j => j.FullNameAr.Contains(t, StringComparison.OrdinalIgnoreCase) || j.Code.Contains(t, StringComparison.OrdinalIgnoreCase));
+            }
+            if (selectedJudgeCourtFilter > 0)
+            {
+                q = q.Where(j => j.CreatedCourtUnitId == selectedJudgeCourtFilter);
+            }
+            if (selectedJudgeStatusFilter == "active")
+            {
+                q = q.Where(j => j.IsActive);
+            }
+            else if (selectedJudgeStatusFilter == "inactive")
+            {
+                q = q.Where(j => !j.IsActive);
+            }
+            return q.ToList();
+        }
+    }
+
+    private List<JudicialStatistics.Application.Courts.CourtUnitDto> userAvailableCourts
+    {
+        get
+        {
+            if (courts == null) return new();
+            if (circuits == null || circuits.Count == 0) return courts;
+            var courtIdsInCircuits = circuits.Select(c => c.CourtUnitId).ToHashSet();
+            return courts.Where(c => courtIdsInCircuits.Contains(c.Id)).ToList();
+        }
+    }
+
+    private List<JudicialStatistics.Application.Courts.CourtUnitDto> userAvailableJudgeCourts
+    {
+        get
+        {
+            if (courts == null) return new();
+            if (judges == null || judges.Count == 0) return courts.Where(c => c.ParentCourtUnitId == null || c.UnitKind == "Court").ToList();
+            var courtIdsInJudges = judges.Where(j => j.CreatedCourtUnitId.HasValue).Select(j => j.CreatedCourtUnitId!.Value).ToHashSet();
+            var list = courts.Where(c => courtIdsInJudges.Contains(c.Id)).ToList();
+            return list.Count > 0 ? list : courts.Where(c => c.ParentCourtUnitId == null || c.UnitKind == "Court").ToList();
+        }
+    }
+
+    // ========== Modals & Validation ==========
+
+    private static string GetUnitKindNameAr(string kind) => kind switch
+    {
+        "Court" => "محكمة ابتدائية",
+        "PlenaryHeadquarters" => "مأمورية كلية",
+        "SummaryCourt" => "محكمة جزئية",
+        "FamilyCourt" => "محكمة أسرة",
+        "LaborCourt" => "محكمة عمالية",
+        _ => kind
+    };
+
+    public List<(string Value, string Label)> GetAllowedCircuitKindsForCourt(long courtId)
+    {
+        var court = courts?.FirstOrDefault(c => c.Id == courtId);
+        if (court == null)
+        {
+            return new()
+            {
+                ("CivilFull", "مدني كلي (نصاب 3 قضاة على الأقل)"),
+                ("CriminalAppeal", "جنح مستأنف (نصاب 3 قضاة على الأقل)"),
+                ("Family", "أسرة (نصاب 3 قضاة على الأقل)"),
+                ("Labor", "عمالية (نصاب 3 قضاة على الأقل)"),
+                ("Partial", "جزئي (قاضٍ فردي واحد فقط)")
+            };
+        }
+
+        return court.UnitKind switch
+        {
+            "PlenaryHeadquarters" => new()
+            {
+                ("CivilFull", "مدني كلي (نصاب 3 قضاة على الأقل)"),
+                ("CriminalAppeal", "جنح مستأنف (نصاب 3 قضاة على الأقل)")
+            },
+            "SummaryCourt" => new()
+            {
+                ("Partial", "جزئي (قاضٍ فردي واحد فقط)")
+            },
+            "LaborCourt" => new()
+            {
+                ("Labor", "عمالية (نصاب 3 قضاة على الأقل)")
+            },
+            "FamilyCourt" => new()
+            {
+                ("Family", "أسرة (نصاب 3 قضاة على الأقل)")
+            },
+            _ => new()
+            {
+                ("CivilFull", "مدني كلي (نصاب 3 قضاة على الأقل)"),
+                ("CriminalAppeal", "جنح مستأنف (نصاب 3 قضاة على الأقل)"),
+                ("Family", "أسرة (نصاب 3 قضاة على الأقل)"),
+                ("Labor", "عمالية (نصاب 3 قضاة على الأقل)"),
+                ("Partial", "جزئي (قاضٍ فردي واحد فقط)")
+            }
+        };
+    }
+
+    private void OnCircuitCourtChanged(long courtId)
+    {
+        circuitModel.CourtUnitId = courtId;
+        var allowed = GetAllowedCircuitKindsForCourt(courtId);
+        if (!allowed.Any(k => k.Value == circuitModel.CircuitKind))
+        {
+            circuitModel.CircuitKind = allowed.FirstOrDefault().Value ?? "CivilFull";
+        }
+        AutoGenerateCircuitCode();
+        AutoSuggestCircuitName();
+    }
+
+    private void OnCircuitKindChanged(string kind)
+    {
+        circuitModel.CircuitKind = kind;
+        AutoGenerateCircuitCode();
+        AutoSuggestCircuitName();
+    }
+
+    private void AutoGenerateCircuitCode()
+    {
+        var prefix = circuitModel.CircuitKind switch
+        {
+            "CivilFull" => "CV",
+            "CriminalAppeal" => "CRIM",
+            "Family" => "FAM",
+            "Labor" => "LAB",
+            "Partial" => "PART",
+            _ => "CIR"
+        };
+
+        int maxNum = 0;
+        if (circuits != null)
+        {
+            foreach (var c in circuits)
+            {
+                if (string.IsNullOrWhiteSpace(c.Code)) continue;
+                var code = c.Code.Trim();
+                var parts = code.Split('-');
+                if (parts.Length >= 2 && parts[0].Equals(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (int.TryParse(parts[1], out int n) && n > maxNum)
+                        maxNum = n;
+                }
+                else if (parts.Length >= 3 && parts[1].Equals(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (int.TryParse(parts[2], out int n) && n > maxNum)
+                        maxNum = n;
+                }
+            }
+        }
+
+        int nextNum = maxNum + 1;
+        circuitModel.Code = $"{prefix}-{nextNum:D2}";
+    }
+
+    private void AutoSuggestCircuitName()
+    {
+        var court = courts?.FirstOrDefault(c => c.Id == circuitModel.CourtUnitId);
+        var kindName = circuitModel.CircuitKind switch
+        {
+            "CivilFull" => "مدني كلي",
+            "CriminalAppeal" => "جنح مستأنف",
+            "Family" => "أسرة",
+            "Labor" => "عمال",
+            "Partial" => "جزئي",
+            _ => "دائرة"
+        };
+        var parts = circuitModel.Code.Split('-');
+        string numStr = parts.Length >= 2 ? parts[1] : "1";
+        if (int.TryParse(numStr, out int numVal)) numStr = numVal.ToString();
+        circuitModel.NameAr = $"الدائرة {numStr} {kindName} {(court != null ? court.NameAr : "")}".Trim();
+    }
+
+    private void OpenAddCircuitModal()
+    {
+        var defaultCourt = courts?.FirstOrDefault(c => c.ParentCourtUnitId != null) ?? courts?.FirstOrDefault();
+        var defaultKind = "CivilFull";
+        if (defaultCourt != null)
+        {
+            var allowed = GetAllowedCircuitKindsForCourt(defaultCourt.Id);
+            defaultKind = allowed.FirstOrDefault().Value ?? "CivilFull";
+        }
+
+        circuitModel = new CircuitFormModel
+        {
+            CourtUnitId = defaultCourt?.Id ?? 0,
+            CircuitKind = defaultKind
+        };
+        AutoGenerateCircuitCode();
+        AutoSuggestCircuitName();
+        showAddCircuitModal = true;
+    }
+
+    // ========== Session Modals & Actions ==========
+
+    private List<CircuitDto> availableCircuitsForSessionModal =>
+        circuits?.Where(c => c.CourtUnitId == sessionCourtUnitId).ToList() ?? new();
+
+    private CircuitDto? selectedSessionCircuit =>
+        circuits?.FirstOrDefault(c => c.Id == sessionModel.CircuitId);
+
+    private List<JudicialStatistics.Domain.Cases.CaseType> allowedCaseTypesForSelectedCircuit
+    {
+        get
+        {
+            if (selectedSessionCircuit == null || allCaseTypes == null) return new();
+            var kind = selectedSessionCircuit.CircuitKind;
+
+            return kind switch
+            {
+                "CivilFull" => allCaseTypes.Where(ct => ct.StatisticalLevelCode == "Full" || ct.Code.StartsWith("CIV-FULL")).ToList(),
+                "Partial" => allCaseTypes.Where(ct => (ct.StatisticalLevelCode == "Partial" || ct.Code.StartsWith("CIV-PART")) && !ct.Code.StartsWith("CRIM")).ToList(),
+                "CriminalAppeal" => allCaseTypes.Where(ct => ct.Code.StartsWith("CRIM-APP") || ct.StatisticalLevelCode == "Juvenile" || ct.StatisticalLevelCode == "Appeal").ToList(),
+                "Family" => allCaseTypes.Where(ct => ct.Code.StartsWith("FAM-") || ct.StatisticalLevelCode == "Family" || ct.ProcedureCode == "Family").ToList(),
+                "Labor" => allCaseTypes.Where(ct => ct.Code.StartsWith("LABOR-") || ct.StatisticalLevelCode == "Labor" || ct.ProcedureCode == "Labor").ToList(),
+                _ => allCaseTypes
+            };
+        }
+    }
+
+    private void OnSessionModalCourtChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var cid))
+        {
+            sessionCourtUnitId = cid;
+            var cirs = availableCircuitsForSessionModal;
+            sessionModel.CircuitId = cirs.FirstOrDefault()?.Id ?? 0;
+            sessionModel.SelectedCaseTypeIds.Clear();
+        }
+    }
+
+    private void OnSessionModalCircuitChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var cirId))
+        {
+            sessionModel.CircuitId = cirId;
+            sessionModel.SelectedCaseTypeIds.Clear();
+        }
+    }
+
+    private void ToggleSessionCaseType(long ctId, ChangeEventArgs e)
+    {
+        bool isChecked = (bool)(e.Value ?? false);
+        if (isChecked)
+        {
+            if (!sessionModel.SelectedCaseTypeIds.Contains(ctId))
+                sessionModel.SelectedCaseTypeIds.Add(ctId);
+        }
+        else
+        {
+            sessionModel.SelectedCaseTypeIds.Remove(ctId);
+        }
+    }
+
+    private void SelectAllAllowedCaseTypes()
+    {
+        foreach (var ct in allowedCaseTypesForSelectedCircuit)
+        {
+            if (!sessionModel.SelectedCaseTypeIds.Contains(ct.Id))
+                sessionModel.SelectedCaseTypeIds.Add(ct.Id);
+        }
+    }
+
+    private void DeselectAllCaseTypes()
+    {
+        sessionModel.SelectedCaseTypeIds.Clear();
+    }
+
+    // Geographic Area Multi-selection helpers
+    private void ToggleSessionGeoArea(long areaId, ChangeEventArgs e)
+    {
+        bool isChecked = (bool)(e.Value ?? false);
+        if (isChecked)
+        {
+            if (!sessionModel.SelectedGeographicAreaIds.Contains(areaId))
+                sessionModel.SelectedGeographicAreaIds.Add(areaId);
+        }
+        else
+        {
+            sessionModel.SelectedGeographicAreaIds.Remove(areaId);
+        }
+    }
+
+    private void RemoveSessionGeoArea(long areaId)
+    {
+        sessionModel.SelectedGeographicAreaIds.Remove(areaId);
+    }
+
+    private void SelectAllFilteredSessionGeoAreas()
+    {
+        var filtered = GetFilteredGeoAreas(sessionGeoSearchTerm, sessionGeoKindFilter);
+        foreach (var a in filtered)
+        {
+            if (!sessionModel.SelectedGeographicAreaIds.Contains(a.Id))
+                sessionModel.SelectedGeographicAreaIds.Add(a.Id);
+        }
+    }
+
+    private void DeselectAllSessionGeoAreas()
+    {
+        sessionModel.SelectedGeographicAreaIds.Clear();
+    }
+
+    private void ToggleEditSessionGeoArea(long areaId, ChangeEventArgs e)
+    {
+        if (editingSessionModel == null) return;
+        bool isChecked = (bool)(e.Value ?? false);
+        if (isChecked)
+        {
+            if (!editingSessionModel.SelectedGeographicAreaIds.Contains(areaId))
+                editingSessionModel.SelectedGeographicAreaIds.Add(areaId);
+        }
+        else
+        {
+            editingSessionModel.SelectedGeographicAreaIds.Remove(areaId);
+        }
+    }
+
+    private void RemoveEditSessionGeoArea(long areaId)
+    {
+        editingSessionModel?.SelectedGeographicAreaIds.Remove(areaId);
+    }
+
+    private void SelectAllFilteredEditSessionGeoAreas()
+    {
+        if (editingSessionModel == null) return;
+        var filtered = GetFilteredGeoAreas(editSessionGeoSearchTerm, editSessionGeoKindFilter);
+        foreach (var a in filtered)
+        {
+            if (!editingSessionModel.SelectedGeographicAreaIds.Contains(a.Id))
+                editingSessionModel.SelectedGeographicAreaIds.Add(a.Id);
+        }
+    }
+
+    private void DeselectAllEditSessionGeoAreas()
+    {
+        editingSessionModel?.SelectedGeographicAreaIds.Clear();
+    }
+
+    private List<GeographicAreaDto> GetFilteredGeoAreas(string search, string kind)
+    {
+        var list = activeGeoAreas.AsEnumerable();
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var t = search.Trim();
+            list = list.Where(a => a.NameAr.Contains(t, StringComparison.OrdinalIgnoreCase) || a.Code.Contains(t, StringComparison.OrdinalIgnoreCase));
+        }
+        if (!string.IsNullOrWhiteSpace(kind))
+        {
+            list = list.Where(a => a.AreaKind.Equals(kind, StringComparison.OrdinalIgnoreCase));
+        }
+        return list.ToList();
+    }
+
+    private string GetAreaKindAr(string kind) => kind switch
+    {
+        "Governorate" => "محافظة",
+        "Markaz" => "مركز",
+        "PoliceStation" => "قسم شرطة",
+        "District" => "حي",
+        "City" => "مدينة",
+        "Village" => "قرية",
+        _ => kind
+    };
+
+    private void OpenAddSessionModal()
+    {
+        sessionCourtUnitId = courts?.FirstOrDefault()?.Id ?? 0;
+        var available = availableCircuitsForSessionModal;
+        sessionModel = new SessionFormModel
+        {
+            CircuitId = available.FirstOrDefault()?.Id ?? (circuits?.FirstOrDefault()?.Id ?? 0)
+        };
+        sessionGeoSearchTerm = "";
+        sessionGeoKindFilter = "";
+        sessionSecretarySearchTerm = "";
+        isSearchingSecretaryInAdd = false;
+        showAddSessionModal = true;
+    }
+
+    private async Task OpenEditSessionModal(SessionDto s)
+    {
+        var detail = await OrgService.GetSessionDetailAsync(s.Id);
+        var latestVersion = detail?.Versions.FirstOrDefault();
+
+        editingSessionModel = new SessionEditFormModel
+        {
+            Id = s.Id,
+            Code = s.Code,
+            NameAr = s.NameAr,
+            Description = s.Description ?? latestVersion?.ScheduleDescription,
+            ShowInProgressReport = s.ShowInProgressReport,
+            IsClosed = s.IsClosed,
+            ScheduleDescription = latestVersion?.ScheduleDescription,
+            SelectedGeographicAreaIds = latestVersion?.GeographicAreaIds?.ToList() ?? new(),
+            SelectedCaseTypeIds = latestVersion?.CaseTypeIds?.ToList() ?? new(),
+            EmployeeId = s.EmployeeId,
+            SelectedEmployeeName = s.EmployeeNameAr,
+            SelectedEmployeeJobTitle = s.EmployeeJobTitle
+        };
+        editSessionGeoSearchTerm = "";
+        editSessionGeoKindFilter = "";
+        editSessionSecretarySearchTerm = "";
+        isSearchingSecretaryInEdit = false;
+        showEditSessionModal = true;
+    }
+
+    private async Task HandleUpdateSession()
+    {
+        if (editingSessionModel == null) return;
+        if (editingSessionModel.SelectedGeographicAreaIds.Count == 0)
+        {
+            statusMessage = "يجب اختيار نطاق جغرافي واحد على الأقل لتحديد الاختصاص المكاني للجلسة.";
+            isError = true;
+            return;
+        }
+
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            await OrgService.UpdateSessionAsync(new SessionUpdateCommand(
+                editingSessionModel.Id,
+                editingSessionModel.NameAr,
+                editingSessionModel.IsClosed,
+                editingSessionModel.ScheduleDescription,
+                editingSessionModel.SelectedGeographicAreaIds,
+                editingSessionModel.SelectedCaseTypeIds,
+                editingSessionModel.EmployeeId,
+                editingSessionModel.Description,
+                editingSessionModel.ShowInProgressReport
+            ));
+
+            statusMessage = $"تم تحديث بيانات الجلسة '{editingSessionModel.NameAr}' واختصاصها المكاني بنجاح.";
+            isError = false;
+            CloseModals();
+            await LoadYearDataAsync(selectedYearId);
+            if (selectedCircuitId > 0) await LoadCircuitFormationAsync(selectedCircuitId);
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private async Task ToggleSessionClosed(long sessionId)
+    {
+        try
+        {
+            await OrgService.ToggleSessionClosedAsync(sessionId);
+            statusMessage = "تم تغيير حالة الجلسة بنجاح.";
+            isError = false;
+            await LoadYearDataAsync(selectedYearId);
+            if (selectedCircuitId > 0) await LoadCircuitFormationAsync(selectedCircuitId);
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"خطأ أثناء تعديل حالة الجلسة: {ex.Message}";
+            isError = true;
+        }
+    }
+
+    // ========== Judge Modals & Actions ==========
+
+    private void OpenAddJudgeModal()
+    {
+        judgeModel = new JudgeFormModel
+        {
+            CreatedCourtUnitId = currentUserCourtId ?? CourtState.SelectedPrimaryCourtId
+        };
+        showAddJudgeModal = true;
+    }
+
+    private void OpenEditJudgeModal(JudgeDto j)
+    {
+        editingJudgeModel = new JudgeEditFormModel
+        {
+            Id = j.Id,
+            Code = j.Code,
+            FullNameAr = j.FullNameAr,
+            IsActive = j.IsActive,
+            CreatedCourtUnitId = j.CreatedCourtUnitId,
+            CreatedCourtUnitNameAr = j.CreatedCourtUnitNameAr
+        };
+        showEditJudgeModal = true;
+    }
+
+    private bool CanEditJudge(JudgeDto j)
+    {
+        if (isUserAdmin) return true;
+        if (!j.CreatedCourtUnitId.HasValue) return true;
+        return currentUserCourtId.HasValue && j.CreatedCourtUnitId.Value == currentUserCourtId.Value;
+    }
+
+    // ========== Assign Judge Modals & Actions ==========
+
+    private List<CircuitDto> availableCircuitsForAssignModal =>
+        circuits?.Where(c => c.CourtUnitId == assignCourtId).ToList() ?? new();
+
+    private List<JudgeDto> filteredAssignJudges
+    {
+        get
+        {
+            if (allActiveJudgesForAssign == null) return new();
+            if (string.IsNullOrWhiteSpace(assignJudgeSearchTerm)) return allActiveJudgesForAssign;
+            var t = assignJudgeSearchTerm.Trim();
+            return allActiveJudgesForAssign.Where(j => j.FullNameAr.Contains(t, StringComparison.OrdinalIgnoreCase) || j.Code.Contains(t, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+    }
+
+    private CircuitDto? selectedAssignCircuit =>
+        circuits?.FirstOrDefault(c => c.Id == assignModel.CircuitId);
+
+    private bool isSelectedCircuitPartial =>
+        selectedAssignCircuit?.CircuitKind == "Partial";
+
+    private List<JudicialRoleDto> allowedJudicialRolesForSelectedCircuit
+    {
+        get
+        {
+            if (judicialRoles == null) return new();
+            if (isSelectedCircuitPartial)
+            {
+                return judicialRoles.Where(r => r.Code == "CHAIR" || r.NameAr.Contains("رئيس")).ToList();
+            }
+            return judicialRoles.OrderBy(r => r.SortOrder).ToList();
+        }
+    }
+
+    private void OnAssignCourtChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var cid))
+        {
+            assignCourtId = cid;
+            var cirs = availableCircuitsForAssignModal;
+            assignModel.CircuitId = cirs.FirstOrDefault()?.Id ?? 0;
+            var roles = allowedJudicialRolesForSelectedCircuit;
+            if (!roles.Any(r => r.Id == assignModel.JudicialRoleId))
+            {
+                assignModel.JudicialRoleId = roles.FirstOrDefault()?.Id ?? 0;
+            }
+        }
+    }
+
+    private void OnAssignCircuitChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var cirId))
+        {
+            assignModel.CircuitId = cirId;
+            var roles = allowedJudicialRolesForSelectedCircuit;
+            if (!roles.Any(r => r.Id == assignModel.JudicialRoleId))
+            {
+                assignModel.JudicialRoleId = roles.FirstOrDefault()?.Id ?? 0;
+            }
+        }
+    }
+
+    private void OpenAssignJudgeModal()
+    {
+        assignCourtId = courts?.FirstOrDefault()?.Id ?? 0;
+        var available = availableCircuitsForAssignModal;
+        assignJudgeSearchTerm = "";
+        assignModel = new AssignFormModel
+        {
+            JudgeId = judges?.FirstOrDefault()?.Id ?? 0,
+            CircuitId = available.FirstOrDefault()?.Id ?? (circuits?.FirstOrDefault()?.Id ?? 0),
+            JudicialRoleId = judicialRoles?.FirstOrDefault()?.Id ?? 0
+        };
+
+        var roles = allowedJudicialRolesForSelectedCircuit;
+        if (!roles.Any(r => r.Id == assignModel.JudicialRoleId))
+        {
+            assignModel.JudicialRoleId = roles.FirstOrDefault()?.Id ?? 0;
+        }
+
+        showAssignJudgeModal = true;
+    }
+
+    private void CloseModals()
+    {
+        showAddCircuitModal = false;
+        showAddSessionModal = false;
+        showEditSessionModal = false;
+        showAddJudgeModal = false;
+        showEditJudgeModal = false;
+        showAddEmployeeModal = false;
+        showEditEmployeeModal = false;
+        showAssignJudgeModal = false;
+        showSessionOpeningBalanceModal = false;
+        isSearchingSecretaryInAdd = false;
+        isSearchingSecretaryInEdit = false;
+    }
+
+    private async Task HandleCreateCircuit()
+    {
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            if (string.IsNullOrWhiteSpace(circuitModel.Code))
+            {
+                AutoGenerateCircuitCode();
+            }
+            if (string.IsNullOrWhiteSpace(circuitModel.NameAr))
+            {
+                AutoSuggestCircuitName();
+            }
+
+            // Strict Validation Rules طبقاً للفلسفة المعتمدة
+            var allowedKinds = GetAllowedCircuitKindsForCourt(circuitModel.CourtUnitId).Select(k => k.Value).ToList();
+            if (!allowedKinds.Contains(circuitModel.CircuitKind))
+            {
+                throw new InvalidOperationException("قاعدة نظام صارمة: نوع الدائرة المختار غير مسموح به لهذه المحكمة/المأمورية طبقاً لقواعد العمل المعتمدة.");
+            }
+
+            var y = years?.FirstOrDefault(x => x.Id == selectedYearId);
+            var start = y?.StartDate ?? new DateOnly(2025, 10, 1);
+            var end = y?.EndDate ?? new DateOnly(2026, 9, 30);
+
+            short minJudges = (short)(circuitModel.CircuitKind == "Partial" ? 1 : 3);
+            short maxJudges = (short)(circuitModel.CircuitKind == "Partial" ? 1 : 4);
+
+            await OrgService.CreateCircuitAsync(new CircuitCreateCommand(
+                selectedYearId,
+                circuitModel.CourtUnitId,
+                circuitModel.Code,
+                circuitModel.NameAr,
+                circuitModel.CircuitKind,
+                start,
+                end,
+                minJudges,
+                maxJudges
+            ));
+
+            statusMessage = $"تمت إضافة الدائرة '{circuitModel.NameAr}' بنجاح.";
+            isError = false;
+            CloseModals();
+            await LoadYearDataAsync(selectedYearId);
+            await LoadCourtsCascadeAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally { isSubmitting = false; }
+    }
+
+    private async Task HandleCreateSession()
+    {
+        if (sessionModel.SelectedGeographicAreaIds.Count == 0)
+        {
+            statusMessage = "يجب اختيار نطاق جغرافي واحد على الأقل لتحديد الاختصاص المكاني للجلسة.";
+            isError = true;
+            return;
+        }
+
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            var y = years?.FirstOrDefault(x => x.Id == selectedYearId);
+            var start = y?.StartDate ?? new DateOnly(2025, 10, 1);
+            var end = y?.EndDate ?? new DateOnly(2026, 9, 30);
+
+            var geoIds = sessionModel.SelectedGeographicAreaIds.Count > 0 ? sessionModel.SelectedGeographicAreaIds : null;
+            var caseTypeIds = sessionModel.SelectedCaseTypeIds.Count > 0 ? sessionModel.SelectedCaseTypeIds : null;
+
+            await OrgService.CreateSessionAsync(new SessionCreateCommand(
+                sessionModel.CircuitId,
+                sessionModel.Code,
+                sessionModel.NameAr,
+                null,
+                start,
+                end,
+                sessionModel.ScheduleDescription,
+                geoIds,
+                caseTypeIds,
+                sessionModel.EmployeeId,
+                sessionModel.Description,
+                sessionModel.ShowInProgressReport
+            ));
+
+            statusMessage = $"تمت إضافة الجلسة '{sessionModel.NameAr}' بنجاح.";
+            isError = false;
+            CloseModals();
+            await LoadYearDataAsync(selectedYearId);
+            if (selectedCircuitId > 0)
+            {
+                await LoadCircuitFormationAsync(selectedCircuitId);
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally { isSubmitting = false; }
+    }
+
+    private async Task HandleCreateJudge()
+    {
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            await OrgService.CreateJudgeAsync(new JudgeCreateCommand(
+                judgeModel.Code, 
+                judgeModel.FullNameAr, 
+                judgeModel.CreatedCourtUnitId
+            ));
+
+            statusMessage = $"تم تسجيل القاضي '{judgeModel.FullNameAr}' بنجاح.";
+            isError = false;
+            CloseModals();
+            judges = await OrgService.GetJudgesAsync(false, selectedYearId, currentUserId);
+            allActiveJudgesForAssign = await OrgService.GetJudgesAsync(true);
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally { isSubmitting = false; }
+    }
+
+    private async Task HandleUpdateJudge()
+    {
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            await OrgService.UpdateJudgeAsync(new JudgeUpdateCommand(
+                editingJudgeModel.Id,
+                editingJudgeModel.Code,
+                editingJudgeModel.FullNameAr,
+                editingJudgeModel.IsActive,
+                currentUserCourtId,
+                isUserAdmin
+            ));
+
+            statusMessage = $"تم تحديث بيانات القاضي '{editingJudgeModel.FullNameAr}' بنجاح.";
+            isError = false;
+            CloseModals();
+            judges = await OrgService.GetJudgesAsync(false, selectedYearId, currentUserId);
+            allActiveJudgesForAssign = await OrgService.GetJudgesAsync(true);
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally { isSubmitting = false; }
+    }
+
+    private async Task HandleAssignJudge()
+    {
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            var circuitDetail = await OrgService.GetCircuitDetailAsync(assignModel.CircuitId);
+            var cv = circuitDetail?.Versions.FirstOrDefault();
+            if (cv is null)
+            {
+                throw new InvalidOperationException("الدائرة المختارة ليس لها نسخة تشكيل حالية.");
+            }
+
+            await OrgService.AssignJudgeAsync(new CircuitJudgeAssignCommand(
+                cv.Id,
+                assignModel.JudgeId,
+                assignModel.JudicialRoleId,
+                cv.EffectiveFrom,
+                cv.EffectiveTo,
+                1
+            ));
+
+            statusMessage = "تم حفظ التكليف القضائي بنجاح.";
+            isError = false;
+            CloseModals();
+            await LoadYearDataAsync(selectedYearId);
+            if (selectedCircuitId > 0)
+            {
+                await LoadCircuitFormationAsync(selectedCircuitId);
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally { isSubmitting = false; }
+    }
+
+    public class CircuitFormModel
+    {
+        public long CourtUnitId { get; set; }
+        public string Code { get; set; } = string.Empty;
+        public string NameAr { get; set; } = string.Empty;
+        public string CircuitKind { get; set; } = "CivilFull";
+    }
+
+    public class SessionFormModel
+    {
+        public long CircuitId { get; set; }
+        public string Code { get; set; } = string.Empty;
+        public string NameAr { get; set; } = string.Empty;
+        public string? Description { get; set; }
+        public bool ShowInProgressReport { get; set; } = true;
+        public string? ScheduleDescription { get; set; }
+        public List<long> SelectedGeographicAreaIds { get; set; } = new();
+        public List<long> SelectedCaseTypeIds { get; set; } = new();
+        public long? EmployeeId { get; set; }
+        public string? SelectedEmployeeName { get; set; }
+    }
+
+    public class SessionEditFormModel
+    {
+        public long Id { get; set; }
+        public string Code { get; set; } = string.Empty;
+        public string NameAr { get; set; } = string.Empty;
+        public string? Description { get; set; }
+        public bool ShowInProgressReport { get; set; } = true;
+        public string? ScheduleDescription { get; set; }
+        public bool IsClosed { get; set; }
+        public List<long> SelectedGeographicAreaIds { get; set; } = new();
+        public List<long> SelectedCaseTypeIds { get; set; } = new();
+        public long? EmployeeId { get; set; }
+        public string? SelectedEmployeeName { get; set; }
+        public string? SelectedEmployeeJobTitle { get; set; }
+    }
+
+    public class EmployeeFormModel
+    {
+        public string Code { get; set; } = string.Empty;
+        public string FullNameAr { get; set; } = string.Empty;
+        public string? JobTitle { get; set; } = "أمين سر جلسة";
+        public string? PhoneNumber { get; set; }
+        public string? NationalId { get; set; }
+        public long? CourtUnitId { get; set; }
+        public bool IsActive { get; set; } = true;
+    }
+
+    public class EmployeeEditFormModel
+    {
+        public long Id { get; set; }
+        public string Code { get; set; } = string.Empty;
+        public string FullNameAr { get; set; } = string.Empty;
+        public string? JobTitle { get; set; } = "أمين سر جلسة";
+        public string? PhoneNumber { get; set; }
+        public string? NationalId { get; set; }
+        public long? CourtUnitId { get; set; }
+        public bool IsActive { get; set; } = true;
+    }
+
+    public class JudgeFormModel
+    {
+        public string Code { get; set; } = string.Empty;
+        public string FullNameAr { get; set; } = string.Empty;
+        public long? CreatedCourtUnitId { get; set; }
+    }
+
+    public class JudgeEditFormModel
+    {
+        public long Id { get; set; }
+        public string Code { get; set; } = string.Empty;
+        public string FullNameAr { get; set; } = string.Empty;
+        public bool IsActive { get; set; } = true;
+        public long? CreatedCourtUnitId { get; set; }
+        public string? CreatedCourtUnitNameAr { get; set; }
+    }
+
+    public class AssignFormModel
+    {
+        public long JudgeId { get; set; }
+        public long CircuitId { get; set; }
+        public long JudicialRoleId { get; set; }
+    }
+
+    // ========== Secretary Selection Helpers ==========
+    private IEnumerable<EmployeeDto> GetFilteredSecretaries(string term)
+    {
+        if (employeesList == null) return Enumerable.Empty<EmployeeDto>();
+        var q = employeesList.Where(e => e.IsActive);
+        if (!string.IsNullOrWhiteSpace(term))
+        {
+            var t = term.Trim();
+            q = q.Where(e => e.FullNameAr.Contains(t, StringComparison.OrdinalIgnoreCase)
+                          || e.Code.Contains(t, StringComparison.OrdinalIgnoreCase)
+                          || (e.NationalId != null && e.NationalId.Contains(t)));
+        }
+        return q.Take(10);
+    }
+
+    private void SelectSecretaryForAdd(EmployeeDto emp)
+    {
+        sessionModel.EmployeeId = emp.Id;
+        sessionModel.SelectedEmployeeName = $"{emp.FullNameAr} ({emp.JobTitle ?? "أمين سر"})";
+        sessionSecretarySearchTerm = "";
+        isSearchingSecretaryInAdd = false;
+    }
+
+    private void RemoveSecretaryFromAdd()
+    {
+        sessionModel.EmployeeId = null;
+        sessionModel.SelectedEmployeeName = null;
+        isSearchingSecretaryInAdd = false;
+    }
+
+    private void StartChangeSecretaryInAdd()
+    {
+        sessionSecretarySearchTerm = "";
+        isSearchingSecretaryInAdd = true;
+    }
+
+    private void SelectSecretaryForEdit(EmployeeDto emp)
+    {
+        if (editingSessionModel == null) return;
+        editingSessionModel.EmployeeId = emp.Id;
+        editingSessionModel.SelectedEmployeeName = emp.FullNameAr;
+        editingSessionModel.SelectedEmployeeJobTitle = emp.JobTitle ?? "أمين سر الجلسة";
+        editSessionSecretarySearchTerm = "";
+        isSearchingSecretaryInEdit = false;
+    }
+
+    private void RemoveSecretaryFromEdit()
+    {
+        if (editingSessionModel == null) return;
+        editingSessionModel.EmployeeId = null;
+        editingSessionModel.SelectedEmployeeName = null;
+        editingSessionModel.SelectedEmployeeJobTitle = null;
+        isSearchingSecretaryInEdit = false;
+    }
+
+    private void StartChangeSecretaryInEdit()
+    {
+        editSessionSecretarySearchTerm = "";
+        isSearchingSecretaryInEdit = true;
+    }
+
+    // ========== Employee CRUD Handlers ==========
+    private void OpenAddEmployeeModal()
+    {
+        employeeModel = new EmployeeFormModel
+        {
+            CourtUnitId = currentUserCourtId ?? CourtState.SelectedPrimaryCourtId
+        };
+        AutoGenerateEmployeeCode();
+        showAddEmployeeModal = true;
+    }
+
+    private void AutoGenerateEmployeeCode()
+    {
+        int count = (employeesList?.Count ?? 0) + 1;
+        employeeModel.Code = $"EMP-{count:D3}";
+    }
+
+    private void OpenEditEmployeeModal(EmployeeDto emp)
+    {
+        editingEmployeeModel = new EmployeeEditFormModel
+        {
+            Id = emp.Id,
+            Code = emp.Code,
+            FullNameAr = emp.FullNameAr,
+            JobTitle = emp.JobTitle,
+            PhoneNumber = emp.PhoneNumber,
+            NationalId = emp.NationalId,
+            CourtUnitId = emp.CourtUnitId,
+            IsActive = emp.IsActive
+        };
+        showEditEmployeeModal = true;
+    }
+
+    private async Task HandleCreateEmployee()
+    {
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            await OrgService.CreateEmployeeAsync(new EmployeeCreateCommand(
+                employeeModel.Code,
+                employeeModel.FullNameAr,
+                employeeModel.JobTitle,
+                employeeModel.PhoneNumber,
+                employeeModel.NationalId,
+                employeeModel.CourtUnitId,
+                employeeModel.IsActive
+            ));
+
+            statusMessage = $"تم تسجيل الموظف '{employeeModel.FullNameAr}' بنجاح.";
+            isError = false;
+            CloseModals();
+            employeesList = await OrgService.GetEmployeesAsync(null, null, false);
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally { isSubmitting = false; }
+    }
+
+    private async Task HandleUpdateEmployee()
+    {
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            await OrgService.UpdateEmployeeAsync(editingEmployeeModel.Id, new EmployeeCreateCommand(
+                editingEmployeeModel.Code,
+                editingEmployeeModel.FullNameAr,
+                editingEmployeeModel.JobTitle,
+                editingEmployeeModel.PhoneNumber,
+                editingEmployeeModel.NationalId,
+                editingEmployeeModel.CourtUnitId,
+                editingEmployeeModel.IsActive
+            ));
+
+            statusMessage = $"تم تحديث بيانات الموظف '{editingEmployeeModel.FullNameAr}' بنجاح.";
+            isError = false;
+            CloseModals();
+            employeesList = await OrgService.GetEmployeesAsync(null, null, false);
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally { isSubmitting = false; }
+    }
+
+    private async Task HandleDeleteEmployee(long id)
+    {
+        try
+        {
+            statusMessage = null;
+            await OrgService.DeleteEmployeeAsync(id);
+            statusMessage = "تم حذف الموظف بنجاح.";
+            isError = false;
+            employeesList = await OrgService.GetEmployeesAsync(null, null, false);
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+    }
+
+    private async Task OpenSessionOpeningBalanceModal(SessionDto s)
+    {
+        selectedSessionForOpeningBalance = s;
+        selectedSessionVersionId = s.SessionVersionId;
+
+        if (selectedSessionVersionId <= 0)
+        {
+            var detail = await OrgService.GetSessionDetailAsync(s.Id);
+            selectedSessionVersionId = detail?.Versions.FirstOrDefault()?.Id ?? 0;
+        }
+
+        if (selectedSessionVersionId <= 0)
+        {
+            statusMessage = "تعذر تحديد نسخة الجلسة للعام القضائي المحدد.";
+            isError = true;
+            return;
+        }
+
+        isLoadingOpeningBalances = true;
+        showSessionOpeningBalanceModal = true;
+        openingBalanceCaseTypeFilter = "";
+        sessionOpeningBalanceItems.Clear();
+
+        try
+        {
+            // 1. الأرصدة الحالية المسجلة للجلسة إن وجدت
+            var existingBalances = await OrgService.GetSessionOpeningBalancesAsync(selectedSessionVersionId);
+            var existingDict = existingBalances.ToDictionary(
+                b => (b.CaseTypeId, b.CaseYearBandId),
+                b => b.Count);
+
+            // 2. أنواع القضايا المسندة للجلسة
+            var caseTypes = await RulesService.GetCaseTypesForSessionVersionAsync(selectedSessionVersionId);
+            if (caseTypes.Count == 0)
+            {
+                caseTypes = await RulesService.GetCaseTypesAsync();
+            }
+
+            // 3. سياسات وشرائح سنوات القيد المعتمدة للعام القضائي
+            var policies = await RulesService.GetPoliciesForYearAsync(selectedYearId);
+            var defaultBands = policies.FirstOrDefault(p => p.Bands.Count > 0)?.Bands ?? new List<CaseYearBandDto>();
+
+            var items = new List<SessionOpeningBalanceItem>();
+
+            foreach (var ct in caseTypes)
+            {
+                var policy = policies.FirstOrDefault(p => p.CaseTypeId == ct.Id);
+                var bandsToUse = (policy != null && policy.Bands.Count > 0) ? policy.Bands : defaultBands;
+
+                foreach (var band in bandsToUse.OrderBy(b => b.SortOrder))
+                {
+                    existingDict.TryGetValue((ct.Id, band.Id), out var count);
+                    items.Add(new SessionOpeningBalanceItem
+                    {
+                        CaseTypeId = ct.Id,
+                        CaseTypeNameAr = ct.NameAr,
+                        CaseYearBandId = band.Id,
+                        CaseYearBandLabelAr = band.LabelAr,
+                        Count = count
+                    });
+                }
+            }
+
+            // تضمين أي أرصدة مسجلة مسبقاً غير موجودة بالقائمة
+            foreach (var ex in existingBalances)
+            {
+                if (!items.Any(i => i.CaseTypeId == ex.CaseTypeId && i.CaseYearBandId == ex.CaseYearBandId))
+                {
+                    items.Add(new SessionOpeningBalanceItem
+                    {
+                        CaseTypeId = ex.CaseTypeId,
+                        CaseTypeNameAr = ex.CaseTypeNameAr,
+                        CaseYearBandId = ex.CaseYearBandId,
+                        CaseYearBandLabelAr = ex.CaseYearBandLabelAr,
+                        Count = ex.Count
+                    });
+                }
+            }
+
+            sessionOpeningBalanceItems = items;
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"خطأ أثناء تحميل الرصيد الافتتاحي: {ex.Message}";
+            isError = true;
+        }
+        finally
+        {
+            isLoadingOpeningBalances = false;
+        }
+    }
+
+    private async Task HandleSaveSessionOpeningBalances()
+    {
+        if (selectedSessionVersionId <= 0) return;
+
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            var toSave = sessionOpeningBalanceItems
+                .Select(i => new OpeningBalanceValue(i.CaseTypeId, i.CaseYearBandId, i.Count))
+                .ToList();
+
+            await OrgService.SaveSessionOpeningBalancesAsync(selectedSessionVersionId, toSave, currentUserId);
+
+            statusMessage = $"✅ تم حفظ الرصيد الافتتاحي لجلسة ({selectedSessionForOpeningBalance?.NameAr}) بنجاح.";
+            isError = false;
+            showSessionOpeningBalanceModal = false;
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"خطأ أثناء حفظ الرصيد الافتتاحي: {ex.Message}";
+            isError = true;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private bool isExportingFormation;
+    private async Task ExportFormationSheet()
+    {
+        isExportingFormation = true;
+        try
+        {
+            var bytes = await FormationExportService.ExportFormationWorkbookAsync(selectedYearId, selectedPeriodId);
+            var fileName = $"شيت_التشكيل_الموحد_{DateTime.Now:yyyyMMdd_HHmm}.xlsx";
+            var base64 = Convert.ToBase64String(bytes);
+            await JSRuntime.InvokeVoidAsync("downloadFileFromBase64", fileName, base64, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            statusMessage = "تم تصدير شيت التشكيل بنجاح وتحميله على جهازك.";
+            isError = false;
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "فشل تصدير شيت التشكيل: " + ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            isExportingFormation = false;
+        }
+    }
+
+    public class SessionOpeningBalanceItem
+    {
+        public long CaseTypeId { get; set; }
+        public string CaseTypeNameAr { get; set; } = string.Empty;
+        public long CaseYearBandId { get; set; }
+        public string CaseYearBandLabelAr { get; set; } = string.Empty;
+        public int Count { get; set; }
+    }
+}

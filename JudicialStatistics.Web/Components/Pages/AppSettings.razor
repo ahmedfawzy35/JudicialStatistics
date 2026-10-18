@@ -1,0 +1,360 @@
+@page "/settings"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using Microsoft.AspNetCore.Authorization
+@using JudicialStatistics.Application.Reports
+@inject IReportsService ReportsService
+@inject JudicialStatistics.Web.Services.CurrentCourtState CourtState
+@inject NavigationManager Navigation
+@inject IJSRuntime JSRuntime
+
+<PageTitle>إعدادات النظام والتقارير — الإحصاء القضائي</PageTitle>
+
+<div class="settings-wrapper" dir="rtl">
+
+    @* ==================== رأس الصفحة ==================== *@
+    <div class="page-header d-flex justify-between align-center flex-wrap gap-3 mb-4">
+        <div>
+            <div class="d-flex align-center gap-2">
+                <span style="font-size:1.8rem;">⚙️</span>
+                <h1 class="page-title m-0">إعدادات النظام والتقارير القضائية</h1>
+            </div>
+            <p class="page-subtitle mt-1 mb-0">
+                لوحة التحكم المركزية لإعدادات التطبيق وطبقة تخصيص مخرجات وأعمدة التقارير لكافة المحاكم
+            </p>
+        </div>
+
+        <div class="d-flex align-center gap-2 flex-wrap">
+            <a href="/reports/circuit-judgments" class="btn btn-outline-primary d-flex align-center gap-2">
+                <span>⚖️ الانتقال لتقرير أحكام الدوائر</span>
+            </a>
+        </div>
+    </div>
+
+    @* رسائل التنبيه والنجاح *@
+    @if (!string.IsNullOrEmpty(statusMessage))
+    {
+        <div class="alert @(statusMessage.Contains("فشل") || statusMessage.Contains("خطأ") ? "alert-danger" : "alert-success") alert-dismissible mb-3 d-flex justify-between align-center">
+            <div>@statusMessage</div>
+            <button type="button" class="btn-close" @onclick="() => statusMessage = null">✕</button>
+        </div>
+    }
+
+    @* ==================== تبويبات الإعدادات ==================== *@
+    <div class="tabs mb-4">
+        <button class="tab @(activeTab == "reports" ? "active" : "")" @onclick='() => activeTab = "reports"'>
+            📊 إعدادات التقارير القضائية
+        </button>
+        <button class="tab @(activeTab == "general" ? "active" : "")" @onclick='() => activeTab = "general"'>
+            🛠️ إعدادات عامة للنظام
+        </button>
+    </div>
+
+    @* ==================== تبويب إعدادات التقارير ==================== *@
+    @if (activeTab == "reports")
+    {
+        <div class="card mb-4 border-0 shadow-sm">
+            <div class="card-header bg-white py-3 border-bottom d-flex justify-between align-center flex-wrap gap-2">
+                <div>
+                    <h5 class="m-0 fw-bold" style="color:#1e3a8a;">
+                        ⚖️ إعدادات أعمدة وعرض «تقرير أحكام الدوائر وتوزيع الجلسات»
+                    </h5>
+                    <p class="text-muted m-0 mt-1" style="font-size:0.88rem;">
+                        تحكم في بنود الأحكام الظاهرة في التقرير، تخصيص مسميات الأعمدة، والتبديل بين النمط المجمع والتفصيلي. تسري هذه الإعدادات على مستوى النظام لجميع المحاكم.
+                    </p>
+                </div>
+                <div class="d-flex align-center gap-2">
+                    <button class="btn btn-outline-danger btn-sm" @onclick="ResetConfigsToDefaultAsync" disabled="@isSaving">
+                        🔄 استعادة الافتراضيات
+                    </button>
+                    <button class="btn btn-primary btn-sm" @onclick="SaveConfigsAsync" disabled="@isSaving">
+                        @if (isSaving)
+                        {
+                            <span class="spinner-border spinner-border-sm" role="status"></span>
+                            <span>جاري الحفظ...</span>
+                        }
+                        else
+                        {
+                            <span>💾 حفظ التعديلات</span>
+                        }
+                    </button>
+                </div>
+            </div>
+
+            <div class="card-body p-0">
+                @if (isLoadingConfigs)
+                {
+                    <div class="text-center p-5">
+                        <span class="spinner-border text-primary" role="status"></span>
+                        <p class="mt-2 text-muted">جاري تحميل إعدادات الأعمدة...</p>
+                    </div>
+                }
+                else if (columnConfigs is not null && columnConfigs.Count > 0)
+                {
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle m-0 text-center configs-table">
+                            <thead class="table-light">
+                                <tr>
+                                    <th style="width:50px;">الترتيب</th>
+                                    <th style="width:130px;">فئة الحكم</th>
+                                    <th style="width:150px;">نوع الحكم / الكود</th>
+                                    <th style="width:160px;">العنوان الافتراضي</th>
+                                    <th>العنوان المخصص الظاهر بالتقرير</th>
+                                    <th style="width:140px;">نمط العرض</th>
+                                    <th style="width:110px;">حالة الظهور</th>
+                                    <th style="width:250px;">الوصف والتفاصيل</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var c in columnConfigs.OrderBy(x => x.DisplayOrder))
+                                {
+                                    <tr class="@(c.IsVisible ? "" : "table-secondary text-muted opacity-75")">
+                                        <td>
+                                            <input type="number" class="form-control form-control-sm text-center m-auto" style="width:65px;"
+                                                   value="@c.DisplayOrder" @onchange="(e) => OnOrderChanged(c, e)" />
+                                        </td>
+                                        <td>
+                                            <span class="badge @GetCategoryBadgeClass(c.Category)">
+                                                @GetCategoryTitleAr(c.Category)
+                                            </span>
+                                        </td>
+                                        <td class="text-start">
+                                            <code class="fw-bold">@c.ColumnKey</code>
+                                        </td>
+                                        <td class="text-start fw-semibold">
+                                            @c.DefaultTitleAr
+                                        </td>
+                                        <td>
+                                            <input type="text" class="form-control form-control-sm"
+                                                   placeholder="@c.DefaultTitleAr"
+                                                   value="@c.CustomTitleAr"
+                                                   @onchange="(e) => OnCustomTitleChanged(c, e)" />
+                                        </td>
+                                        <td>
+                                            <select class="form-control form-control-sm" value="@c.DisplayMode" @onchange="(e) => OnDisplayModeChanged(c, e)">
+                                                <option value="Consolidated">مجمع</option>
+                                                <option value="Detailed">تفصيلي</option>
+                                                <option value="TotalOnly">الإجمالي فقط</option>
+                                            </select>
+                                        </td>
+                                        <td>
+                                            @if (c.IsSystemRequired)
+                                            {
+                                                <span class="badge badge-success" title="عمود إلزامي">دائم الظهور</span>
+                                            }
+                                            else
+                                            {
+                                                <div class="form-check form-switch d-flex justify-center m-0">
+                                                    <input class="form-check-input cursor-pointer" type="checkbox"
+                                                           checked="@c.IsVisible"
+                                                           @onchange="(e) => OnVisibilityChanged(c, e)" />
+                                                </div>
+                                            }
+                                        </td>
+                                        <td class="text-start text-muted" style="font-size:0.83rem;">
+                                            @c.Description
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+
+            <div class="card-footer bg-light py-3 d-flex justify-between align-center flex-wrap gap-2">
+                <span class="text-muted" style="font-size:0.85rem;">
+                    💡 ملاحظة: عند تفعيل عمود تفصيلي (مثل «تحقيق» أو «استجواب»)، سيظهر كعمود مستقل بجانب بنود الإثبات الأخرى في شاشة التقرير وملف الإكسل.
+                </span>
+                <button class="btn btn-primary btn-sm px-4" @onclick="SaveConfigsAsync" disabled="@isSaving">
+                    💾 حفظ كافة التعديلات
+                </button>
+            </div>
+        </div>
+
+        @* قسم التوسعة المستقبلية للتقارير الأخرى *@
+        <div class="card border-0 shadow-sm bg-light p-3">
+            <h6 class="fw-bold mb-1" style="color:#334155;">🔮 طبقة إعدادات التقارير المستقبلية</h6>
+            <p class="text-muted m-0" style="font-size:0.85rem;">
+                تم تجهيز معمارية النظام بقاعدة بيانات مرنة تتيح إضافة إعدادات مخصصة لكافة التقارير (تقرير كشوف الترتيب، كشف الجرد، تقرير إنجاز القضاة) دون أي تعديل في الهيكل الأساسي.
+            </p>
+        </div>
+    }
+    else if (activeTab == "general")
+    {
+        <div class="card mb-4 border-0 shadow-sm">
+            <div class="card-header bg-white py-3 border-bottom">
+                <h5 class="m-0 fw-bold" style="color:#1e3a8a;">🛠️ تفضيلات التقارير العامة والطباعة</h5>
+            </div>
+            <div class="card-body p-4">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">حالة الإحصائيات المعتمدة في التقارير</label>
+                        <input type="text" class="form-control form-control-sm bg-light" value="Approved (معتمدة نهائياً فقط — افتراضي غير قابل للتغيير)" readonly />
+                        <small class="text-muted">طبقاً لقواعد العمل، لا تدرج المسودات في التقارير الرسمية وترتيب الدوائر.</small>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">جهة استخراج التقرير في الترويسة</label>
+                        <input type="text" class="form-control form-control-sm bg-light" value="قسم الإحصاء القضائي — المحكمة الابتدائية" readonly />
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">توجيه صفحة الطباعة الافتراضي</label>
+                        <input type="text" class="form-control form-control-sm bg-light" value="أفقي (Landscape) تلقائي" readonly />
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">صيغة تصدير الجداول</label>
+                        <input type="text" class="form-control form-control-sm bg-light" value="Microsoft Excel OpenXML (.xlsx)" readonly />
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+
+</div>
+
+<style>
+    .settings-wrapper {
+        font-family: inherit;
+    }
+
+    .configs-table th,
+    .configs-table td {
+        vertical-align: middle;
+        padding: 0.55rem 0.6rem;
+        font-size: 0.88rem;
+    }
+
+    .cursor-pointer {
+        cursor: pointer;
+    }
+</style>
+
+@code {
+    private string activeTab = "reports";
+    private List<CircuitReportColumnConfigDto>? columnConfigs;
+    private bool isLoadingConfigs = true;
+    private bool isSaving = false;
+    private string? statusMessage;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadConfigsAsync();
+    }
+
+    private async Task LoadConfigsAsync()
+    {
+        isLoadingConfigs = true;
+        try
+        {
+            columnConfigs = await ReportsService.GetCircuitReportColumnConfigsAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "حدث خطأ أثناء تحميل الإعدادات: " + ex.Message;
+        }
+        finally
+        {
+            isLoadingConfigs = false;
+        }
+    }
+
+    private void OnCustomTitleChanged(CircuitReportColumnConfigDto c, ChangeEventArgs e)
+    {
+        var newVal = e.Value?.ToString() ?? "";
+        UpdateConfigItem(c with { CustomTitleAr = newVal });
+    }
+
+    private void OnOrderChanged(CircuitReportColumnConfigDto c, ChangeEventArgs e)
+    {
+        if (short.TryParse(e.Value?.ToString(), out var o))
+        {
+            UpdateConfigItem(c with { DisplayOrder = o });
+        }
+    }
+
+    private void OnDisplayModeChanged(CircuitReportColumnConfigDto c, ChangeEventArgs e)
+    {
+        var newVal = e.Value?.ToString() ?? "Consolidated";
+        UpdateConfigItem(c with { DisplayMode = newVal });
+    }
+
+    private void OnVisibilityChanged(CircuitReportColumnConfigDto c, ChangeEventArgs e)
+    {
+        bool isChecked = e.Value is bool b && b;
+        UpdateConfigItem(c with { IsVisible = isChecked });
+    }
+
+    private void UpdateConfigItem(CircuitReportColumnConfigDto updated)
+    {
+        if (columnConfigs is null) return;
+        var idx = columnConfigs.FindIndex(x => x.ColumnKey == updated.ColumnKey);
+        if (idx >= 0)
+        {
+            columnConfigs[idx] = updated;
+        }
+    }
+
+    private async Task SaveConfigsAsync()
+    {
+        if (columnConfigs is null) return;
+        isSaving = true;
+        statusMessage = null;
+
+        try
+        {
+            await ReportsService.SaveCircuitReportColumnConfigsAsync(columnConfigs);
+            statusMessage = "تم حفظ إعدادات أعمدة التقرير بنجاح، وستسري فورياً على التقرير وتصدير الإكسل.";
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "فشل حفظ الإعدادات: " + ex.Message;
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private async Task ResetConfigsToDefaultAsync()
+    {
+        isSaving = true;
+        statusMessage = null;
+
+        try
+        {
+            await ReportsService.ResetCircuitReportColumnConfigsToDefaultAsync();
+            await LoadConfigsAsync();
+            statusMessage = "تمت استعادة الإعدادات الافتراضية بنجاح.";
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "فشلت الاستعادة: " + ex.Message;
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private static string GetCategoryTitleAr(string cat) => cat switch
+    {
+        "Final" => "أحكام قطعية",
+        "Interlocutory" => "أحكام فرعية",
+        "Evidence" => "أحكام الإثبات",
+        "Stay" => "أحكام الوقف",
+        "Other" => "أحكام أخرى",
+        "Total" => "المجموع العام",
+        _ => cat
+    };
+
+    private static string GetCategoryBadgeClass(string cat) => cat switch
+    {
+        "Final" => "badge-primary",
+        "Interlocutory" => "badge-info",
+        "Evidence" => "badge-success",
+        "Stay" => "badge-warning",
+        "Other" => "badge-secondary",
+        "Total" => "badge-danger",
+        _ => "badge-muted"
+    };
+}

@@ -1,0 +1,1572 @@
+@page "/rules"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using Microsoft.AspNetCore.Authorization
+@using JudicialStatistics.Application.Organization
+@using JudicialStatistics.Application.Rules
+@inject IRulesService RulesService
+@inject IJudicialYearsService JudicialYearsService
+@inject IOrganizationService OrgService
+
+<PageTitle>قواعد التصنيف وجداول التهيئة — الإحصاء القضائي</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">⚙️ قواعد التصنيف وجداول التهيئة</h1>
+        <p class="page-subtitle">شجرة تصنيف القضايا، أنواع القضايا، بنود الوارد، أنواع الأحكام، أسباب التأجيلات، والتخصصات القضائية</p>
+    </div>
+    <div class="page-actions">
+        @if (activeTab == "casetypes")
+        {
+            <button class="btn btn-primary" @onclick="OpenAddCaseTypeModal">
+                ➕ إضافة نوع قضية جديد
+            </button>
+        }
+        else if (activeTab == "incoming")
+        {
+            <button class="btn btn-primary" @onclick="OpenAddIncomingModal">
+                ➕ إضافة بند مقدم جديد
+            </button>
+        }
+        else if (activeTab == "production")
+        {
+            <button class="btn btn-primary" @onclick="OpenAddProductionModal">
+                ➕ إضافة بند إنتاج جديد
+            </button>
+        }
+        else if (activeTab == "judgments")
+        {
+            <button class="btn btn-primary" @onclick="OpenAddJudgmentModal">
+                ➕ إضافة نوع حكم قضائي
+            </button>
+        }
+        else if (activeTab == "deferrals")
+        {
+            <button class="btn btn-primary" @onclick="OpenAddDeferralModal">
+                ➕ إضافة سبب تأجيل جديد
+            </button>
+        }
+        else if (activeTab == "disciplines")
+        {
+            <button class="btn btn-primary" @onclick="OpenAddDisciplineModal">
+                ➕ إضافة تخصص قضائي جديد
+            </button>
+        }
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success") mb-4">
+        <span>@(isError ? "⚠️" : "✅") @statusMessage</span>
+    </div>
+}
+
+<div class="tabs">
+    <button class="tab @(activeTab == "casetypes" ? "active" : "")" @onclick='() => SetTab("casetypes")'>
+        📚 أنواع القضايا (@(caseTypes?.Count ?? 0))
+    </button>
+    <button class="tab @(activeTab == "taxonomy" ? "active" : "")" @onclick='() => SetTab("taxonomy")'>
+        🌳 شجرة التصنيف
+    </button>
+    <button class="tab @(activeTab == "incoming" ? "active" : "")" @onclick='() => SetTab("incoming")'>
+        📥 بنود المقدم (الوارد) (@(incomingTypes?.Count ?? 0))
+    </button>
+    <button class="tab @(activeTab == "production" ? "active" : "")" @onclick='() => SetTab("production")'>
+        📊 بنود الإنتاج (@(productionTypes?.Count ?? 0))
+    </button>
+    <button class="tab @(activeTab == "judgments" ? "active" : "")" @onclick='() => SetTab("judgments")'>
+        ⚖️ تصنيفات وأنواع الأحكام (@(judgmentTypes?.Count ?? 0))
+    </button>
+    <button class="tab @(activeTab == "deferrals" ? "active" : "")" @onclick='() => SetTab("deferrals")'>
+        ⏳ أسباب المؤجلات (@(deferralReasons?.Count ?? 0))
+    </button>
+    <button class="tab @(activeTab == "yearbands" ? "active" : "")" @onclick='() => SetTab("yearbands")'>
+        📅 شرائح سنوات القيد (@(yearPolicies?.Count ?? 0))
+    </button>
+    <button class="tab @(activeTab == "disciplines" ? "active" : "")" @onclick='() => SetTab("disciplines")'>
+        🏛️ التخصصات القضائية (@(disciplines?.Count ?? 0))
+    </button>
+</div>
+
+@* ==================== TAB 1: أنواع القضايا ==================== *@
+@if (activeTab == "casetypes")
+{
+    <div class="card">
+        <div class="card-header">
+            <span class="card-title">أنواع القضايا المعتمدة</span>
+        </div>
+        <div class="card-body" style="padding:0">
+            @if (caseTypes is null)
+            {
+                <div style="padding:1.5rem" class="d-flex align-center gap-2"><div class="spinner"></div><span>جاري التحميل...</span></div>
+            }
+            else if (caseTypes.Count == 0)
+            {
+                <div style="padding:2rem;text-align:center;color:var(--text-muted)">
+                    لا توجد أنواع قضايا مسجلة بعد.
+                    <button class="btn btn-primary btn-sm mt-3" @onclick="OpenAddCaseTypeModal">إضافة النوع الأول</button>
+                </div>
+            }
+            else
+            {
+                <div class="table-wrapper" style="border:none">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>كود النوع</th>
+                                <th>اسم نوع القضية</th>
+                                <th>فرع التصنيف</th>
+                                <th>المستوى الإحصائي</th>
+                                <th>نوع الإجراء</th>
+                                <th>فئة العمر</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var ct in caseTypes)
+                            {
+                                <tr>
+                                    <td><code>@ct.Code</code></td>
+                                    <td class="fw-semibold">@ct.NameAr</td>
+                                    <td>@ct.TaxonomyNodeNameAr</td>
+                                    <td><span class="badge badge-secondary">@ct.StatisticalLevelCode</span></td>
+                                    <td>@ct.ProcedureCode</td>
+                                    <td>@ct.AgeCategoryCode</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@* ==================== TAB 2: شجرة التصنيف ==================== *@
+@if (activeTab == "taxonomy")
+{
+    <div class="card">
+        <div class="card-header">
+            <span class="card-title">هيكل شجرة تصنيف الدعاوى القضائية</span>
+        </div>
+        <div class="card-body">
+            @if (taxonomyTree is null || taxonomyTree.Count == 0)
+            {
+                <div class="text-muted-color">شجرة التصنيف الافتراضية معتمدة وفقاً لقواعد وزارة العدل.</div>
+            }
+            else
+            {
+                @foreach (var node in taxonomyTree)
+                {
+                    <div style="margin-bottom:1rem;padding:1rem;background:var(--surface-bg);border-radius:var(--radius-md)">
+                        <div class="fw-bold text-primary-color">@node.NameAr (@node.Code)</div>
+                        @if (node.Children.Count > 0)
+                        {
+                            <div style="margin-right:1.5rem;margin-top:.5rem;display:flex;gap:.5rem;flex-wrap:wrap">
+                                @foreach (var ch in node.Children)
+                                {
+                                    <span class="badge badge-secondary" style="font-size:.85rem;padding:.4rem .8rem">
+                                        @ch.NameAr
+                                    </span>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            }
+        </div>
+    </div>
+}
+
+@* ==================== TAB 3: بنود المقدم (الوارد) ==================== *@
+@if (activeTab == "incoming")
+{
+    <div class="card">
+        <div class="card-header d-flex justify-content-between align-center">
+            <span class="card-title">بنود المقدم (مصادر القضايا في الجلسة)</span>
+            <button class="btn btn-sm btn-primary" @onclick="OpenAddIncomingModal">➕ إضافة بند مقدم</button>
+        </div>
+        <div class="card-body" style="padding:0">
+            <div class="table-wrapper" style="border:none">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>الكود</th>
+                            <th>اسم البند</th>
+                            <th>طريقة الإدخال</th>
+                            <th>الترتيب</th>
+                            <th>الإجراءات</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (incomingTypes is not null)
+                        {
+                            @foreach (var it in incomingTypes)
+                            {
+                                <tr>
+                                    <td><code>@it.Code</code></td>
+                                    <td class="fw-semibold">@it.NameAr</td>
+                                    <td><span class="badge badge-info">@it.InputSource</span></td>
+                                    <td>@it.SortOrder</td>
+                                    <td>
+                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenEditIncomingModal(it)">
+                                            ✏️ تعديل
+                                        </button>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+}
+
+@* ==================== TAB 4: بنود الإنتاج ==================== *@
+@if (activeTab == "production")
+{
+    <div class="card">
+        <div class="card-header d-flex justify-content-between align-center">
+            <span class="card-title">بنود الإنتاج والأحكام والإجراءات</span>
+            <button class="btn btn-sm btn-primary" @onclick="OpenAddProductionModal">➕ إضافة بند إنتاج</button>
+        </div>
+        <div class="card-body" style="padding:0">
+            <div class="table-wrapper" style="border:none">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>الكود</th>
+                            <th>اسم البند</th>
+                            <th>طبيعة البند</th>
+                            <th>شاشة الإدخال</th>
+                            <th>الترتيب</th>
+                            <th>الإجراءات</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (productionTypes is not null)
+                        {
+                            @foreach (var pt in productionTypes)
+                            {
+                                <tr>
+                                    <td><code>@pt.Code</code></td>
+                                    <td class="fw-semibold">@pt.NameAr</td>
+                                    <td>
+                                        <span class="badge @(pt.ItemKind == "Judgment" ? "badge-success" : "badge-warning")">
+                                            @(pt.ItemKind == "Judgment" ? "حكم قضائي" : "تأجيل / إجراء")
+                                        </span>
+                                    </td>
+                                    <td>@pt.EntryScreen</td>
+                                    <td>@pt.SortOrder</td>
+                                    <td>
+                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenEditProductionModal(pt)">
+                                            ✏️ تعديل
+                                        </button>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+}
+
+@* ==================== TAB 5: أنواع الأحكام ==================== *@
+@if (activeTab == "judgments")
+{
+    <div class="card" style="margin-bottom:1.5rem">
+        <div class="card-header">
+            <span class="card-title">🌳 هيكل شجرة تصنيف الأحكام والإجراءات القضائية</span>
+        </div>
+        <div class="card-body">
+            @if (judgmentTree is null || judgmentTree.Count == 0)
+            {
+                <div class="text-muted-color">جاري التحميل أو لا توجد عقد مسجلة.</div>
+            }
+            else
+            {
+                <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(300px, 1fr));gap:1rem">
+                    @foreach (var node in judgmentTree)
+                    {
+                        <div style="padding:1rem;background:var(--surface-bg);border:1px solid var(--border-color);border-radius:var(--radius-md)">
+                            <div class="fw-bold text-primary-color" style="margin-bottom:.5rem">
+                                ⚖️ @node.NameAr <small class="text-muted">(@node.Code)</small>
+                            </div>
+                            @if (node.Children.Count > 0)
+                            {
+                                <div style="display:flex;gap:.4rem;flex-wrap:wrap">
+                                    @foreach (var ch in node.Children)
+                                    {
+                                        <span class="badge badge-secondary" style="font-size:.85rem;padding:.35rem .7rem">
+                                            @ch.NameAr
+                                        </span>
+                                    }
+                                </div>
+                            }
+                            else
+                            {
+                                <span class="text-muted" style="font-size:.85rem">تصنيف رئيسي مباشر</span>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header d-flex justify-content-between align-center">
+            <span class="card-title">📜 جدول أنواع الأحكام القضائية المعتمدة (@(judgmentTypes?.Count ?? 0))</span>
+            <button class="btn btn-sm btn-primary" @onclick="OpenAddJudgmentModal">➕ إضافة نوع حكم جديد</button>
+        </div>
+        <div class="card-body" style="padding:0">
+            <div class="table-wrapper" style="border:none">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>الكود</th>
+                            <th>نوع الحكم القضائي</th>
+                            <th>الحالة</th>
+                            <th>الإجراءات</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (judgmentTypes is not null)
+                        {
+                            @foreach (var jt in judgmentTypes)
+                            {
+                                <tr>
+                                    <td><code>@jt.Code</code></td>
+                                    <td class="fw-semibold">@jt.NameAr</td>
+                                    <td>
+                                        <span class="badge @(jt.IsActive ? "badge-success" : "badge-secondary")">
+                                            @(jt.IsActive ? "نشط ومفعّل" : "معطّل")
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <div class="d-flex gap-2">
+                                            <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenEditJudgmentModal(jt)">
+                                                ✏️ تعديل
+                                            </button>
+                                            <button class="btn btn-sm @(jt.IsActive ? "btn-outline-danger" : "btn-outline-success")" @onclick="() => ToggleJudgmentActive(jt.Id)">
+                                                @(jt.IsActive ? "تعطيل" : "تفعيل")
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+}
+
+@* ==================== TAB 6: أسباب المؤجلات ==================== *@
+@if (activeTab == "deferrals")
+{
+    <div class="card">
+        <div class="card-header d-flex justify-content-between align-center">
+            <span class="card-title">أسباب المؤجلات المعتمدة</span>
+            <button class="btn btn-sm btn-primary" @onclick="OpenAddDeferralModal">➕ إضافة سبب تأجيل جديد</button>
+        </div>
+        <div class="card-body" style="padding:0">
+            <div class="table-wrapper" style="border:none">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>الكود</th>
+                            <th>سبب التأجيل</th>
+                            <th>مصدر السبب</th>
+                            <th>الترتيب</th>
+                            <th>الإجراءات</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (deferralReasons is not null)
+                        {
+                            @foreach (var dr in deferralReasons)
+                            {
+                                <tr>
+                                    <td><code>@dr.Code</code></td>
+                                    <td class="fw-semibold">@dr.NameAr</td>
+                                    <td>@dr.SourceKind</td>
+                                    <td>@dr.SortOrder</td>
+                                    <td>
+                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenEditDeferralModal(dr)">
+                                            ✏️ تعديل
+                                        </button>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+}
+
+@* ==================== TAB 7: شرائح سنوات القيد ==================== *@
+@if (activeTab == "yearbands")
+{
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <div>
+                <span class="card-title">📅 شرائح سنوات القيد للعام القضائي</span>
+                <p class="text-secondary mb-0" style="font-size:0.85rem">
+                    إدارة سنوات قيد القضايا المسجلة بالإحصائية وتعديلها سنوياً (مدني كلي: 5 سنوات قيد، أسرة وعمال: 3 سنوات، جنائي: سنة واحدة).
+                </p>
+            </div>
+            <div class="d-flex gap-2 align-items-center flex-wrap">
+                <label class="fw-semibold" style="font-size:0.9rem">العام القضائي:</label>
+                <select class="form-control" style="width:auto;display:inline-block" value="@selectedJudicialYearId" @onchange="OnYearPolicyYearChanged">
+                    @if (judicialYears is not null)
+                    {
+                        @foreach (var y in judicialYears)
+                        {
+                            <option value="@y.Id">@y.NameAr</option>
+                        }
+                    }
+                </select>
+                <select class="form-control" style="width:auto;display:inline-block" @bind="selectedDisciplineFilter">
+                    <option value="">كافة التخصصات</option>
+                    <option value="CIV-FULL">مدني كلي</option>
+                    <option value="FAM-">أسرة</option>
+                    <option value="LABOR-">عمال</option>
+                    <option value="CRIM-">جنائي</option>
+                </select>
+            </div>
+        </div>
+        <div class="card-body" style="padding:0">
+            @if (yearPolicies is null)
+            {
+                <div style="padding:1.5rem" class="d-flex align-center gap-2"><div class="spinner"></div><span>جاري التحميل...</span></div>
+            }
+            else if (FilteredPolicies.Count == 0)
+            {
+                <div style="padding:2rem;text-align:center;color:var(--text-muted)">لا توجد سياسات مسجلة لهذا العام أو الفلتر.</div>
+            }
+            else
+            {
+                <div class="table-wrapper" style="border:none">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>نوع القضية</th>
+                                <th>مرجع القرار</th>
+                                <th>عدد الشرائح</th>
+                                <th>الشرائح المعتمدة لسنة القيد</th>
+                                <th>الحالة</th>
+                                <th>إجراء</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var pol in FilteredPolicies)
+                            {
+                                <tr>
+                                    <td class="fw-semibold">@pol.CaseTypeNameAr</td>
+                                    <td style="font-size:0.85rem;color:var(--text-secondary)">@pol.DecisionReference</td>
+                                    <td><span class="badge badge-info">@pol.Bands.Count شرائح</span></td>
+                                    <td>
+                                        <div class="d-flex gap-1 flex-wrap">
+                                            @foreach (var b in pol.Bands.OrderBy(x => x.SortOrder))
+                                            {
+                                                <span class="badge badge-secondary" style="font-size:0.8rem">
+                                                    @b.LabelAr
+                                                    @if (b.BandKind == "UpTo")
+                                                    {
+                                                        <small class="text-muted">(حتى @b.ToYear)</small>
+                                                    }
+                                                    else if (b.BandKind == "Exact")
+                                                    {
+                                                        <small class="text-muted">(@b.ToYear)</small>
+                                                    }
+                                                </span>
+                                            }
+                                        </div>
+                                    </td>
+                                    <td><span class="badge badge-success">@pol.Status</span></td>
+                                    <td>
+                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenEditPolicyModal(pol)">
+                                            ✏️ تعديل الشرائح
+                                        </button>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@* ==================== TAB 8: التخصصات القضائية ==================== *@
+@if (activeTab == "disciplines")
+{
+    <div class="card">
+        <div class="card-header d-flex justify-content-between align-center">
+            <div>
+                <span class="card-title">🏛️ التخصصات القضائية الإحصائية المعتمدة</span>
+                <p class="text-secondary mb-0" style="font-size:0.85rem">
+                    إدارة وإضافة التخصصات القضائية (مثل المدني، الجنائي، الأسرة، العمال، الاقتصادية...) وأنواع الدوائر وشاشات الإدخال التابعة لها
+                </p>
+            </div>
+            <button class="btn btn-sm btn-primary" @onclick="OpenAddDisciplineModal">➕ إضافة تخصص قضائي جديد</button>
+        </div>
+        <div class="card-body" style="padding:0">
+            @if (disciplines is null)
+            {
+                <div style="padding:1.5rem" class="d-flex align-center gap-2"><div class="spinner"></div><span>جاري التحميل...</span></div>
+            }
+            else if (disciplines.Count == 0)
+            {
+                <div style="padding:2rem;text-align:center;color:var(--text-muted)">
+                    لا توجد تخصصات مسجلة.
+                    <button class="btn btn-primary btn-sm mt-3" @onclick="OpenAddDisciplineModal">إضافة التخصص الأول</button>
+                </div>
+            }
+            else
+            {
+                <div class="table-wrapper" style="border:none">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>الأيقونة</th>
+                                <th>الكود</th>
+                                <th>اسم التخصص</th>
+                                <th>أنواع الدوائر التابعة</th>
+                                <th>شكل نموذج الإدخال</th>
+                                <th>الترتيب</th>
+                                <th>الحالة</th>
+                                <th>الإجراءات</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var d in disciplines)
+                            {
+                                <tr>
+                                    <td style="font-size:1.3rem">@d.Icon</td>
+                                    <td><code>@d.Code</code></td>
+                                    <td class="fw-semibold">@d.NameAr</td>
+                                    <td>
+                                        @foreach (var k in d.CircuitKinds.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                                        {
+                                            <span class="badge badge-secondary" style="margin-left:4px">@k.Trim()</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        <span class="badge @(d.EntryFormKind == "Criminal" ? "badge-warning" : "badge-info")">
+                                            @(d.EntryFormKind == "Criminal" ? "نموذج جنائي (جدول موحد)" : "نموذج مدني (متعدد التبويبات)")
+                                        </span>
+                                    </td>
+                                    <td>@d.SortOrder</td>
+                                    <td>
+                                        <span class="badge @(d.IsActive ? "badge-success" : "badge-secondary")">
+                                            @(d.IsActive ? "نشط ومفعّل" : "معطّل")
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <div class="d-flex gap-2">
+                                            <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenEditDisciplineModal(d)">✏️ تعديل</button>
+                                            <button class="btn btn-sm @(d.IsActive ? "btn-outline-danger" : "btn-outline-success")" @onclick="() => ToggleDisciplineActive(d.Id)">
+                                                @(d.IsActive ? "تعطيل" : "تفعيل")
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@* ==================== MODALS ==================== *@
+
+@* Modal إضافة نوع قضية *@
+@if (showAddCaseTypeModal)
+{
+    <div class="modal-backdrop" @onclick="CloseAddCaseTypeModal">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">➕ إضافة نوع قضية جديد</span>
+                <button class="modal-close" @onclick="CloseAddCaseTypeModal">✕</button>
+            </div>
+            <EditForm Model="caseTypeModel" OnValidSubmit="HandleCreateCaseType">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> كود القضية</label>
+                        <InputText class="form-control" @bind-Value="caseTypeModel.Code" placeholder="مثال: CIV-FULL-GOV" required />
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> اسم نوع القضية</label>
+                        <InputText class="form-control" @bind-Value="caseTypeModel.NameAr" placeholder="مثال: مدني كلي حكومة" required />
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">المستوى الإحصائي</label>
+                        <InputSelect class="form-control" @bind-Value="caseTypeModel.StatisticalLevelCode">
+                            <option value="Full">كلي</option>
+                            <option value="Partial">جزئي</option>
+                            <option value="Criminal">جنح / جنائي</option>
+                            <option value="Family">أسرة</option>
+                            <option value="Labor">عمال</option>
+                            <option value="Juvenile">أحداث</option>
+                        </InputSelect>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">نوع الإجراء</label>
+                        <InputSelect class="form-control" @bind-Value="caseTypeModel.ProcedureCode">
+                            <option value="Civil">مدني</option>
+                            <option value="Criminal">جنائي</option>
+                            <option value="Family">أسرة</option>
+                            <option value="Labor">عمالي</option>
+                        </InputSelect>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseAddCaseTypeModal">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">حفظ</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@* Modal تعديل شرائح سنوات القيد *@
+@if (showEditPolicyModal && editingPolicy is not null)
+{
+    <div class="modal-backdrop" @onclick="CloseEditPolicyModal">
+        <div class="modal" style="max-width:720px" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">✏️ تعديل شرائح سنوات القيد: @editingPolicy.CaseTypeNameAr</span>
+                <button class="modal-close" @onclick="CloseEditPolicyModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-info mb-3" style="font-size:0.85rem">
+                    ضبط شرائح سنوات القيد المعتمدة لهذا النوع (مدني كلي: 5 سنوات قيد، أسرة وعمال: 3 سنوات، جنائي: سنة إحصائية موحدة).
+                </div>
+
+                <div class="table-wrapper mb-3">
+                    <table class="table" style="font-size:0.85rem">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>المسمى (العنوان)</th>
+                                <th>النوع</th>
+                                <th>من سنة</th>
+                                <th>إلى سنة</th>
+                                <th>حذف</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @for (int idx = 0; idx < editingBands.Count; idx++)
+                            {
+                                var band = editingBands[idx];
+                                <tr>
+                                    <td>@(idx + 1)</td>
+                                    <td>
+                                        <input class="form-control" style="font-size:0.85rem;padding:0.25rem 0.5rem" @bind="band.LabelAr" placeholder="مثال: 2022 وما قبلها" />
+                                    </td>
+                                    <td>
+                                        <select class="form-control" style="font-size:0.85rem;padding:0.25rem 0.5rem" @bind="band.BandKind">
+                                            <option value="UpTo">وما قبلها (UpTo)</option>
+                                            <option value="Exact">سنة محددة (Exact)</option>
+                                            <option value="AllYears">السنة الإحصائية (AllYears)</option>
+                                        </select>
+                                    </td>
+                                    <td>
+                                        <input type="number" class="form-control" style="font-size:0.85rem;padding:0.25rem 0.5rem;width:85px" @bind="band.FromYear" disabled="@(band.BandKind != "Exact")" />
+                                    </td>
+                                    <td>
+                                        <input type="number" class="form-control" style="font-size:0.85rem;padding:0.25rem 0.5rem;width:85px" @bind="band.ToYear" disabled="@(band.BandKind == "AllYears")" />
+                                    </td>
+                                    <td>
+                                        <button type="button" class="btn btn-sm btn-outline-danger" @onclick="() => RemoveBandRow(band)" disabled="@(editingBands.Count <= 1)">✕</button>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="AddBandRow">
+                    ➕ إضافة شريحة جديدة
+                </button>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" @onclick="CloseEditPolicyModal">إلغاء</button>
+                <button type="button" class="btn btn-primary" @onclick="HandleSavePolicyBands" disabled="@isSubmitting">حفظ التعديلات</button>
+            </div>
+        </div>
+    </div>
+}
+
+@* Modal إضافة/تعديل نوع حكم *@
+@if (showJudgmentModal)
+{
+    <div class="modal-backdrop" @onclick="CloseJudgmentModal">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">@(judgmentFormModel.Id > 0 ? "✏️ تعديل نوع حكم" : "➕ إضافة نوع حكم قضائي جديد")</span>
+                <button class="modal-close" @onclick="CloseJudgmentModal">✕</button>
+            </div>
+            <EditForm Model="judgmentFormModel" OnValidSubmit="HandleSaveJudgment">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> كود نوع الحكم</label>
+                        <InputText class="form-control" @bind-Value="judgmentFormModel.Code" disabled="@(judgmentFormModel.Id > 0)" placeholder="مثال: ACCEPT_PARTIAL" required />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> اسم نوع الحكم بالعربية</label>
+                        <InputText class="form-control" @bind-Value="judgmentFormModel.NameAr" placeholder="مثال: قبول جزئي للطلبات" required />
+                    </div>
+                    @if (judgmentFormModel.Id > 0)
+                    {
+                        <div class="form-check mt-3">
+                            <InputCheckbox class="form-check-input" @bind-Value="judgmentFormModel.IsActive" id="chkJtActive" />
+                            <label class="form-check-label" for="chkJtActive">نشط ومفعّل في النظام</label>
+                        </div>
+                    }
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseJudgmentModal">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">حفظ</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@* Modal إضافة/تعديل سبب تأجيل *@
+@if (showDeferralModal)
+{
+    <div class="modal-backdrop" @onclick="CloseDeferralModal">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">@(deferralFormModel.Id > 0 ? "✏️ تعديل سبب تأجيل" : "➕ إضافة سبب تأجيل جديد")</span>
+                <button class="modal-close" @onclick="CloseDeferralModal">✕</button>
+            </div>
+            <EditForm Model="deferralFormModel" OnValidSubmit="HandleSaveDeferral">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> كود سبب التأجيل</label>
+                        <InputText class="form-control" @bind-Value="deferralFormModel.Code" disabled="@(deferralFormModel.Id > 0)" placeholder="مثال: DEF_PAYMENT" required />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> نص سبب التأجيل</label>
+                        <InputText class="form-control" @bind-Value="deferralFormModel.NameAr" placeholder="مثال: لسداد الأمانة" required />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">مصدر السبب</label>
+                        <InputSelect class="form-control" @bind-Value="deferralFormModel.SourceKind">
+                            <option value="Hearing">إجراء بالجلسة (Hearing)</option>
+                            <option value="Judge">قرار قضائي / قاضٍ (Judge)</option>
+                            <option value="Parties">طلب الخصوم (Parties)</option>
+                        </InputSelect>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">الترتيب</label>
+                        <InputNumber class="form-control" @bind-Value="deferralFormModel.SortOrder" />
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseDeferralModal">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">حفظ</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@* Modal إضافة/تعديل بند مقدم *@
+@if (showIncomingModal)
+{
+    <div class="modal-backdrop" @onclick="CloseIncomingModal">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">@(incomingFormModel.Id > 0 ? "✏️ تعديل بند مقدم" : "➕ إضافة بند مقدم جديد")</span>
+                <button class="modal-close" @onclick="CloseIncomingModal">✕</button>
+            </div>
+            <EditForm Model="incomingFormModel" OnValidSubmit="HandleSaveIncoming">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> كود البند</label>
+                        <InputText class="form-control" @bind-Value="incomingFormModel.Code" disabled="@(incomingFormModel.Id > 0)" placeholder="مثال: INC_ONLINE" required />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> اسم بند المقدم</label>
+                        <InputText class="form-control" @bind-Value="incomingFormModel.NameAr" placeholder="مثال: قيد إلكتروني" required />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">طريقة الإدخال / المصدر</label>
+                        <InputSelect class="form-control" @bind-Value="incomingFormModel.InputSource">
+                            <option value="Manual">يدوي (Manual)</option>
+                            <option value="Balance">رصيد سابق مدور (Balance)</option>
+                            <option value="Shortening">تقصير (Shortening)</option>
+                        </InputSelect>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">الترتيب</label>
+                        <InputNumber class="form-control" @bind-Value="incomingFormModel.SortOrder" />
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseIncomingModal">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">حفظ</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@* Modal إضافة/تعديل بند إنتاج *@
+@if (showProductionModal)
+{
+    <div class="modal-backdrop" @onclick="CloseProductionModal">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">@(productionFormModel.Id > 0 ? "✏️ تعديل بند إنتاج" : "➕ إضافة بند إنتاج جديد")</span>
+                <button class="modal-close" @onclick="CloseProductionModal">✕</button>
+            </div>
+            <EditForm Model="productionFormModel" OnValidSubmit="HandleSaveProduction">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> كود بند الإنتاج</label>
+                        <InputText class="form-control" @bind-Value="productionFormModel.Code" disabled="@(productionFormModel.Id > 0)" placeholder="مثال: PROD_COMM_SERVICE" required />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> اسم بند الإنتاج</label>
+                        <InputText class="form-control" @bind-Value="productionFormModel.NameAr" placeholder="مثال: خدمة مجتمعية" required />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">طبيعة البند</label>
+                        <InputSelect class="form-control" @bind-Value="productionFormModel.ItemKind">
+                            <option value="Judgment">حكم قضائي (Judgment)</option>
+                            <option value="Deferral">تأجيل (Deferral)</option>
+                            <option value="Action">إجراء (Action)</option>
+                        </InputSelect>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">شاشة الإدخال</label>
+                        <InputSelect class="form-control" @bind-Value="productionFormModel.EntryScreen">
+                            <option value="Judgments">شاشة الأحكام (Judgments)</option>
+                            <option value="Deferrals">شاشة المؤجلات (Deferrals)</option>
+                            <option value="Actions">شاشة الإجراءات (Actions)</option>
+                        </InputSelect>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">الترتيب</label>
+                        <InputNumber class="form-control" @bind-Value="productionFormModel.SortOrder" />
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseProductionModal">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">حفظ</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@* Modal إضافة/تعديل تخصص قضائي *@
+@if (showDisciplineModal)
+{
+    <div class="modal-backdrop" @onclick="CloseDisciplineModal">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">@(disciplineFormModel.Id > 0 ? "✏️ تعديل تخصص قضائي" : "➕ إضافة تخصص قضائي جديد")</span>
+                <button class="modal-close" @onclick="CloseDisciplineModal">✕</button>
+            </div>
+            <EditForm Model="disciplineFormModel" OnValidSubmit="HandleSaveDiscipline">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> كود التخصص (باللاتينية)</label>
+                        <InputText class="form-control" @bind-Value="disciplineFormModel.Code" disabled="@(disciplineFormModel.Id > 0)" placeholder="مثال: Economic" required />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> اسم التخصص بالعربية</label>
+                        <InputText class="form-control" @bind-Value="disciplineFormModel.NameAr" placeholder="مثال: اقتصادي" required />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">الأيقونة (Emoji)</label>
+                        <InputText class="form-control" @bind-Value="disciplineFormModel.Icon" placeholder="مثال: 📈 أو ⚖️" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> أنواع الدوائر التابعة (مفصولة بفاصلة)</label>
+                        <InputText class="form-control" @bind-Value="disciplineFormModel.CircuitKinds" placeholder="مثال: EconomicFull,EconomicSummary" required />
+                        <small class="text-secondary">الأكواد المستخدمة في CircuitKind للدوائر التابعة لهذا التخصص</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">شكل نموذج الإدخال</label>
+                        <InputSelect class="form-control" @bind-Value="disciplineFormModel.EntryFormKind">
+                            <option value="Civil">نموذج مدني (متعدد التبويبات مع توزيع القضاة)</option>
+                            <option value="Criminal">نموذج جنائي (جدول موسع موحد)</option>
+                        </InputSelect>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">الترتيب</label>
+                        <InputNumber class="form-control" @bind-Value="disciplineFormModel.SortOrder" />
+                    </div>
+                    @if (disciplineFormModel.Id > 0)
+                    {
+                        <div class="form-check mt-3">
+                            <InputCheckbox class="form-check-input" @bind-Value="disciplineFormModel.IsActive" id="chkDiscActive" />
+                            <label class="form-check-label" for="chkDiscActive">نشط ومفعّل في القوائم</label>
+                        </div>
+                    }
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseDisciplineModal">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">حفظ</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@code {
+    private string activeTab = "casetypes";
+    private List<CaseTypeDto>? caseTypes;
+    private List<CaseTaxonomyNodeDto>? taxonomyTree;
+    private List<IncomingTypeDto>? incomingTypes;
+    private List<ProductionItemTypeDto>? productionTypes;
+    private List<JudgmentTypeDto>? judgmentTypes;
+    private List<JudgmentTreeNodeDto>? judgmentTree;
+    private List<DeferralReasonDto>? deferralReasons;
+    private List<StatisticalDisciplineDto>? disciplines;
+
+    private List<JudicialYearDto>? judicialYears;
+    private long selectedJudicialYearId;
+    private List<CaseYearPolicyDto>? yearPolicies;
+    private string selectedDisciplineFilter = "";
+
+    // Policy Modal
+    private bool showEditPolicyModal = false;
+    private CaseYearPolicyDto? editingPolicy;
+    private List<CaseYearBandEditModel> editingBands = new();
+
+    // CaseType Modal
+    private bool showAddCaseTypeModal = false;
+    private CaseTypeFormModel caseTypeModel = new();
+
+    // Judgment Modal
+    private bool showJudgmentModal = false;
+    private JudgmentFormModel judgmentFormModel = new();
+
+    // Deferral Modal
+    private bool showDeferralModal = false;
+    private DeferralFormModel deferralFormModel = new();
+
+    // Incoming Modal
+    private bool showIncomingModal = false;
+    private IncomingFormModel incomingFormModel = new();
+
+    // Production Modal
+    private bool showProductionModal = false;
+    private ProductionFormModel productionFormModel = new();
+
+    // Discipline Modal
+    private bool showDisciplineModal = false;
+    private DisciplineFormModel disciplineFormModel = new();
+
+    private bool isSubmitting = false;
+    private string? statusMessage;
+    private bool isError = false;
+
+    private List<CaseYearPolicyDto> FilteredPolicies
+    {
+        get
+        {
+            if (yearPolicies is null) return new();
+            if (string.IsNullOrWhiteSpace(selectedDisciplineFilter)) return yearPolicies;
+            return yearPolicies.Where(p =>
+            {
+                var ct = caseTypes?.FirstOrDefault(c => c.Id == p.CaseTypeId);
+                return ct != null && ct.Code.StartsWith(selectedDisciplineFilter);
+            }).ToList();
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+    }
+
+    private async Task LoadDataAsync()
+    {
+        caseTypes = await RulesService.GetCaseTypesAsync();
+        taxonomyTree = await RulesService.GetTaxonomyTreeAsync();
+        incomingTypes = await RulesService.GetIncomingTypesAsync();
+        productionTypes = await RulesService.GetProductionItemTypesAsync();
+        judgmentTypes = await RulesService.GetJudgmentTypesAsync(true);
+        judgmentTree = await RulesService.GetJudgmentTreeAsync();
+        deferralReasons = await RulesService.GetDeferralReasonsAsync();
+        disciplines = await OrgService.GetDisciplinesAsync(false);
+
+        judicialYears = await JudicialYearsService.GetYearsAsync();
+        var activeYear = judicialYears.FirstOrDefault(y => y.Status == "Active") ?? judicialYears.FirstOrDefault();
+        if (activeYear != null)
+        {
+            selectedJudicialYearId = activeYear.Id;
+            yearPolicies = await RulesService.GetPoliciesForYearAsync(selectedJudicialYearId);
+        }
+    }
+
+    private void SetTab(string tab) => activeTab = tab;
+
+    private async Task OnYearPolicyYearChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var yId))
+        {
+            selectedJudicialYearId = yId;
+            yearPolicies = await RulesService.GetPoliciesForYearAsync(selectedJudicialYearId);
+        }
+    }
+
+    // ========== CaseType Modal Handlers ==========
+
+    private void OpenAddCaseTypeModal()
+    {
+        caseTypeModel = new CaseTypeFormModel();
+        showAddCaseTypeModal = true;
+    }
+
+    private void CloseAddCaseTypeModal() => showAddCaseTypeModal = false;
+
+    private async Task HandleCreateCaseType()
+    {
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            await RulesService.CreateCaseTypeAsync(new CaseTypeCreateCommand(
+                1,
+                caseTypeModel.Code,
+                caseTypeModel.NameAr,
+                caseTypeModel.StatisticalLevelCode,
+                caseTypeModel.ProcedureCode,
+                "All"
+            ));
+
+            statusMessage = $"تمت إضافة نوع القضية '{caseTypeModel.NameAr}' بنجاح.";
+            isError = false;
+            CloseAddCaseTypeModal();
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally { isSubmitting = false; }
+    }
+
+    // ========== Policy Modal Handlers ==========
+
+    private void OpenEditPolicyModal(CaseYearPolicyDto pol)
+    {
+        editingPolicy = pol;
+        editingBands = pol.Bands.OrderBy(b => b.SortOrder).Select(b => new CaseYearBandEditModel
+        {
+            Id = b.Id,
+            BandKind = b.BandKind,
+            LabelAr = b.LabelAr,
+            FromYear = b.FromYear,
+            ToYear = b.ToYear,
+            SortOrder = b.SortOrder
+        }).ToList();
+        showEditPolicyModal = true;
+    }
+
+    private void CloseEditPolicyModal()
+    {
+        showEditPolicyModal = false;
+        editingPolicy = null;
+        editingBands.Clear();
+    }
+
+    private void AddBandRow()
+    {
+        short nextOrder = (short)(editingBands.Count + 1);
+        editingBands.Add(new CaseYearBandEditModel
+        {
+            BandKind = "Exact",
+            LabelAr = "سنة جديدة",
+            SortOrder = nextOrder
+        });
+    }
+
+    private void RemoveBandRow(CaseYearBandEditModel band)
+    {
+        if (editingBands.Count > 1)
+        {
+            editingBands.Remove(band);
+        }
+    }
+
+    private async Task HandleSavePolicyBands()
+    {
+        if (editingPolicy is null) return;
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            var dtoList = editingBands.Select((b, idx) => new CaseYearBandDto(
+                b.Id,
+                editingPolicy.Id,
+                b.FromYear,
+                b.ToYear,
+                b.BandKind,
+                b.LabelAr.Trim(),
+                (short)(idx + 1)
+            )).ToList();
+
+            await RulesService.UpdateCaseYearBandsAsync(editingPolicy.Id, dtoList);
+            statusMessage = $"تم حفظ وتحديث شرائح سنوات القيد لـ '{editingPolicy.CaseTypeNameAr}' بنجاح.";
+            isError = false;
+            CloseEditPolicyModal();
+            yearPolicies = await RulesService.GetPoliciesForYearAsync(selectedJudicialYearId);
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    // ========== Judgment Modal Handlers ==========
+
+    private void OpenAddJudgmentModal()
+    {
+        judgmentFormModel = new JudgmentFormModel { SortOrder = (short)((judgmentTypes?.Count ?? 0) + 1) };
+        showJudgmentModal = true;
+    }
+
+    private void OpenEditJudgmentModal(JudgmentTypeDto dto)
+    {
+        judgmentFormModel = new JudgmentFormModel
+        {
+            Id = dto.Id,
+            Code = dto.Code,
+            NameAr = dto.NameAr,
+            IsActive = dto.IsActive
+        };
+        showJudgmentModal = true;
+    }
+
+    private void CloseJudgmentModal() => showJudgmentModal = false;
+
+    private async Task HandleSaveJudgment()
+    {
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            if (judgmentFormModel.Id > 0)
+            {
+                await RulesService.UpdateJudgmentTypeAsync(new JudgmentTypeUpdateCommand(
+                    judgmentFormModel.Id,
+                    judgmentFormModel.NameAr,
+                    judgmentFormModel.IsActive
+                ));
+                statusMessage = $"تم تحديث نوع الحكم '{judgmentFormModel.NameAr}' بنجاح.";
+            }
+            else
+            {
+                await RulesService.CreateJudgmentTypeAsync(new JudgmentTypeCreateCommand(
+                    judgmentFormModel.Code,
+                    judgmentFormModel.NameAr
+                ));
+                statusMessage = $"تمت إضافة نوع الحكم '{judgmentFormModel.NameAr}' بنجاح.";
+            }
+
+            isError = false;
+            CloseJudgmentModal();
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally { isSubmitting = false; }
+    }
+
+    private async Task ToggleJudgmentActive(long id)
+    {
+        try
+        {
+            await RulesService.ToggleJudgmentTypeActiveAsync(id);
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+    }
+
+    // ========== Deferral Modal Handlers ==========
+
+    private void OpenAddDeferralModal()
+    {
+        deferralFormModel = new DeferralFormModel { SortOrder = (short)((deferralReasons?.Count ?? 0) + 1) };
+        showDeferralModal = true;
+    }
+
+    private void OpenEditDeferralModal(DeferralReasonDto dto)
+    {
+        deferralFormModel = new DeferralFormModel
+        {
+            Id = dto.Id,
+            Code = dto.Code,
+            NameAr = dto.NameAr,
+            SourceKind = dto.SourceKind,
+            SortOrder = dto.SortOrder
+        };
+        showDeferralModal = true;
+    }
+
+    private void CloseDeferralModal() => showDeferralModal = false;
+
+    private async Task HandleSaveDeferral()
+    {
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            if (deferralFormModel.Id > 0)
+            {
+                await RulesService.UpdateDeferralReasonAsync(new DeferralReasonUpdateCommand(
+                    deferralFormModel.Id,
+                    deferralFormModel.NameAr,
+                    deferralFormModel.SourceKind,
+                    deferralFormModel.SortOrder
+                ));
+                statusMessage = $"تم تحديث سبب التأجيل '{deferralFormModel.NameAr}' بنجاح.";
+            }
+            else
+            {
+                await RulesService.CreateDeferralReasonAsync(new DeferralReasonCreateCommand(
+                    deferralFormModel.Code,
+                    deferralFormModel.NameAr,
+                    deferralFormModel.SourceKind,
+                    deferralFormModel.SortOrder
+                ));
+                statusMessage = $"تمت إضافة سبب التأجيل '{deferralFormModel.NameAr}' بنجاح.";
+            }
+
+            isError = false;
+            CloseDeferralModal();
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally { isSubmitting = false; }
+    }
+
+    // ========== Incoming Modal Handlers ==========
+
+    private void OpenAddIncomingModal()
+    {
+        incomingFormModel = new IncomingFormModel { SortOrder = (short)((incomingTypes?.Count ?? 0) + 1) };
+        showIncomingModal = true;
+    }
+
+    private void OpenEditIncomingModal(IncomingTypeDto dto)
+    {
+        incomingFormModel = new IncomingFormModel
+        {
+            Id = dto.Id,
+            Code = dto.Code,
+            NameAr = dto.NameAr,
+            InputSource = dto.InputSource,
+            SortOrder = dto.SortOrder
+        };
+        showIncomingModal = true;
+    }
+
+    private void CloseIncomingModal() => showIncomingModal = false;
+
+    private async Task HandleSaveIncoming()
+    {
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            if (incomingFormModel.Id > 0)
+            {
+                await RulesService.UpdateIncomingTypeAsync(new IncomingTypeUpdateCommand(
+                    incomingFormModel.Id,
+                    incomingFormModel.NameAr,
+                    incomingFormModel.InputSource,
+                    incomingFormModel.SortOrder
+                ));
+                statusMessage = $"تم تحديث بند المقدم '{incomingFormModel.NameAr}' بنجاح.";
+            }
+            else
+            {
+                await RulesService.CreateIncomingTypeAsync(new IncomingTypeCreateCommand(
+                    incomingFormModel.Code,
+                    incomingFormModel.NameAr,
+                    incomingFormModel.InputSource,
+                    incomingFormModel.SortOrder
+                ));
+                statusMessage = $"تمت إضافة بند المقدم '{incomingFormModel.NameAr}' بنجاح.";
+            }
+
+            isError = false;
+            CloseIncomingModal();
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally { isSubmitting = false; }
+    }
+
+    // ========== Production Modal Handlers ==========
+
+    private void OpenAddProductionModal()
+    {
+        productionFormModel = new ProductionFormModel { SortOrder = (short)((productionTypes?.Count ?? 0) + 1) };
+        showProductionModal = true;
+    }
+
+    private void OpenEditProductionModal(ProductionItemTypeDto dto)
+    {
+        productionFormModel = new ProductionFormModel
+        {
+            Id = dto.Id,
+            Code = dto.Code,
+            NameAr = dto.NameAr,
+            ItemKind = dto.ItemKind,
+            EntryScreen = dto.EntryScreen,
+            SortOrder = dto.SortOrder
+        };
+        showProductionModal = true;
+    }
+
+    private void CloseProductionModal() => showProductionModal = false;
+
+    private async Task HandleSaveProduction()
+    {
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            if (productionFormModel.Id > 0)
+            {
+                await RulesService.UpdateProductionItemTypeAsync(new ProductionItemTypeUpdateCommand(
+                    productionFormModel.Id,
+                    productionFormModel.NameAr,
+                    productionFormModel.ItemKind,
+                    productionFormModel.EntryScreen,
+                    productionFormModel.SortOrder
+                ));
+                statusMessage = $"تم تحديث بند الإنتاج '{productionFormModel.NameAr}' بنجاح.";
+            }
+            else
+            {
+                await RulesService.CreateProductionItemTypeAsync(new ProductionItemTypeCreateCommand(
+                    productionFormModel.Code,
+                    productionFormModel.NameAr,
+                    productionFormModel.ItemKind,
+                    productionFormModel.EntryScreen,
+                    productionFormModel.SortOrder
+                ));
+                statusMessage = $"تمت إضافة بند الإنتاج '{productionFormModel.NameAr}' بنجاح.";
+            }
+
+            isError = false;
+            CloseProductionModal();
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally { isSubmitting = false; }
+    }
+
+    // ========== Discipline Modal Handlers ==========
+
+    private void OpenAddDisciplineModal()
+    {
+        disciplineFormModel = new DisciplineFormModel { SortOrder = (short)((disciplines?.Count ?? 0) + 1) };
+        showDisciplineModal = true;
+    }
+
+    private void OpenEditDisciplineModal(StatisticalDisciplineDto dto)
+    {
+        disciplineFormModel = new DisciplineFormModel
+        {
+            Id = dto.Id,
+            Code = dto.Code,
+            NameAr = dto.NameAr,
+            Icon = dto.Icon,
+            CircuitKinds = dto.CircuitKinds,
+            EntryFormKind = dto.EntryFormKind,
+            SortOrder = dto.SortOrder,
+            IsActive = dto.IsActive
+        };
+        showDisciplineModal = true;
+    }
+
+    private void CloseDisciplineModal() => showDisciplineModal = false;
+
+    private async Task HandleSaveDiscipline()
+    {
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            if (disciplineFormModel.Id > 0)
+            {
+                await OrgService.UpdateDisciplineAsync(new StatisticalDisciplineUpdateCommand(
+                    disciplineFormModel.Id,
+                    disciplineFormModel.NameAr,
+                    disciplineFormModel.Icon,
+                    disciplineFormModel.CircuitKinds,
+                    disciplineFormModel.EntryFormKind,
+                    disciplineFormModel.SortOrder,
+                    disciplineFormModel.IsActive
+                ));
+                statusMessage = $"تم تحديث التخصص القضائي '{disciplineFormModel.NameAr}' بنجاح.";
+            }
+            else
+            {
+                await OrgService.CreateDisciplineAsync(new StatisticalDisciplineCreateCommand(
+                    disciplineFormModel.Code,
+                    disciplineFormModel.NameAr,
+                    disciplineFormModel.Icon,
+                    disciplineFormModel.CircuitKinds,
+                    disciplineFormModel.EntryFormKind,
+                    disciplineFormModel.SortOrder
+                ));
+                statusMessage = $"تم إنشاء وتفعيل التخصص القضائي '{disciplineFormModel.NameAr}' بنجاح.";
+            }
+
+            isError = false;
+            CloseDisciplineModal();
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally { isSubmitting = false; }
+    }
+
+    private async Task ToggleDisciplineActive(long id)
+    {
+        try
+        {
+            await OrgService.ToggleDisciplineActiveAsync(id);
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+    }
+
+    // ========== Form Models ==========
+
+    public class CaseTypeFormModel
+    {
+        public string Code { get; set; } = string.Empty;
+        public string NameAr { get; set; } = string.Empty;
+        public string StatisticalLevelCode { get; set; } = "Full";
+        public string ProcedureCode { get; set; } = "Civil";
+    }
+
+    public class CaseYearBandEditModel
+    {
+        public long Id { get; set; }
+        public string BandKind { get; set; } = "Exact";
+        public string LabelAr { get; set; } = string.Empty;
+        public short? FromYear { get; set; }
+        public short? ToYear { get; set; }
+        public short SortOrder { get; set; }
+    }
+
+    public class JudgmentFormModel
+    {
+        public long Id { get; set; }
+        public string Code { get; set; } = string.Empty;
+        public string NameAr { get; set; } = string.Empty;
+        public bool IsActive { get; set; } = true;
+        public short SortOrder { get; set; } = 1;
+    }
+
+    public class DeferralFormModel
+    {
+        public long Id { get; set; }
+        public string Code { get; set; } = string.Empty;
+        public string NameAr { get; set; } = string.Empty;
+        public string SourceKind { get; set; } = "Hearing";
+        public short SortOrder { get; set; } = 1;
+    }
+
+    public class IncomingFormModel
+    {
+        public long Id { get; set; }
+        public string Code { get; set; } = string.Empty;
+        public string NameAr { get; set; } = string.Empty;
+        public string InputSource { get; set; } = "Manual";
+        public short SortOrder { get; set; } = 1;
+    }
+
+    public class ProductionFormModel
+    {
+        public long Id { get; set; }
+        public string Code { get; set; } = string.Empty;
+        public string NameAr { get; set; } = string.Empty;
+        public string ItemKind { get; set; } = "Judgment";
+        public string EntryScreen { get; set; } = "Judgments";
+        public short SortOrder { get; set; } = 1;
+    }
+
+    public class DisciplineFormModel
+    {
+        public long Id { get; set; }
+        public string Code { get; set; } = string.Empty;
+        public string NameAr { get; set; } = string.Empty;
+        public string Icon { get; set; } = "⚖️";
+        public string CircuitKinds { get; set; } = string.Empty;
+        public string EntryFormKind { get; set; } = "Civil";
+        public short SortOrder { get; set; } = 1;
+        public bool IsActive { get; set; } = true;
+    }
+}

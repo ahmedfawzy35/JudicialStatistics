@@ -1,0 +1,895 @@
+@page "/users"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@implements IDisposable
+@inject JudicialStatistics.Web.Services.UserManagementService UserService
+@inject JudicialStatistics.Web.Services.CurrentCourtState CourtState
+@inject JudicialStatistics.Web.Data.ApplicationDbContext DbContext
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Navigation
+
+<PageTitle>إدارة المستخدمين والصلاحيات — الإحصاء القضائي</PageTitle>
+
+@if (!isAuthorized)
+{
+    <div class="alert alert-danger" style="margin:2rem auto;max-width:600px;">
+        <h4>⛔ غير مصرح بالوصول</h4>
+        <p>هذه الشاشة مخصصة فقط لمديري النظام ومديري أقسام الإحصاء بالمحاكم الابتدائية.</p>
+        <a href="/" class="btn btn-outline-secondary mt-2">العودة للرئيسية</a>
+    </div>
+}
+else
+{
+    <div class="page-header mb-4">
+        <div>
+            <h1 class="page-title">👥 إدارة المستخدمين والصلاحيات</h1>
+            <p class="page-subtitle">
+                <span>إدارة حسابات المستخدمين وإسناد المحاكم والدوائر والجلسات — </span>
+                <strong style="color:var(--brand-primary);">@CourtState.SelectedPrimaryCourtName</strong>
+            </p>
+        </div>
+        <div class="page-actions d-flex gap-2">
+            <button class="btn btn-primary d-flex align-center gap-2" @onclick="OpenCreateModal">
+                <span>➕</span>
+                <span>إضافة مستخدم جديد</span>
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(statusMessage))
+    {
+        <div class="alert @(isError ? "alert-danger" : "alert-success") mb-4 d-flex align-center justify-between">
+            <span>@(isError ? "⚠️" : "✅") @statusMessage</span>
+            <button type="button" class="btn btn-sm btn-link" style="color:inherit;text-decoration:none" @onclick="() => statusMessage = null">✕</button>
+        </div>
+    }
+
+    @* بطاقة الفلاتر والبحث *@
+    <div class="card mb-4">
+        <div class="card-body" style="padding:1rem 1.25rem;">
+            <div class="row g-3 align-items-center">
+                <div class="col-md-4">
+                    <label class="form-label" style="font-size:0.85rem;font-weight:600;color:var(--text-secondary)">بحث بالاسم أو البريد:</label>
+                    <input type="text" class="form-control form-control-sm" placeholder="ابحث بالاسم أو البريد..."
+                           value="@searchTerm" @oninput="OnSearchChanged" />
+                </div>
+
+                @if (CourtState.IsSystemAdmin)
+                {
+                    <div class="col-md-4">
+                        <label class="form-label" style="font-size:0.85rem;font-weight:600;color:var(--text-secondary)">المحكمة الابتدائية:</label>
+                        <select class="form-control form-control-sm" value="@selectedFilterCourtId" @onchange="OnFilterCourtChanged">
+                            <option value="0">-- كافة المحاكم الابتدائية المصرح بها --</option>
+                            @foreach (var c in CourtState.AllowedPrimaryCourts)
+                            {
+                                <option value="@c.Id">@c.NameAr</option>
+                            }
+                        </select>
+                    </div>
+                }
+
+                <div class="col-md-4">
+                    <label class="form-label" style="font-size:0.85rem;font-weight:600;color:var(--text-secondary)">حالة الحساب:</label>
+                    <select class="form-control form-control-sm" value="@selectedStatusFilter" @onchange="OnStatusFilterChanged">
+                        <option value="">-- كافة الحالات --</option>
+                        <option value="active">مفعل فقط</option>
+                        <option value="suspended">معطل فقط</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @* جدول المستخدمين *@
+    <div class="card">
+        <div class="card-header d-flex justify-between align-center">
+            <span class="card-title">
+                📋 مستخدمو النظام المسجلون (@filteredUsers.Count)
+            </span>
+            <button class="btn btn-sm btn-outline-secondary" @onclick="LoadUsersAsync">
+                🔄 تحديث
+            </button>
+        </div>
+        <div class="card-body" style="padding:0">
+            @if (isLoading)
+            {
+                <div style="padding:2rem" class="d-flex align-center justify-content-center gap-2">
+                    <div class="spinner"></div>
+                    <span>جاري تحميل بيانات المستخدمين...</span>
+                </div>
+            }
+            else if (filteredUsers.Count == 0)
+            {
+                <div style="padding:3rem;text-align:center;color:var(--text-muted)">
+                    <div style="font-size:2.5rem;margin-bottom:.75rem">👥</div>
+                    <div style="font-weight:600">لا يوجد مستخدمون مطابقون لشروط البحث.</div>
+                </div>
+            }
+            else
+            {
+                <div class="table-wrapper" style="border:none">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>الاسم الكامل</th>
+                                <th>البريد الإلكتروني</th>
+                                <th>المحكمة الابتدائية</th>
+                                <th>الدور الوظيفي</th>
+                                <th>نطاق الجلسات</th>
+                                <th>الحالة</th>
+                                <th style="text-align:center;min-width:200px">الإجراءات والتحكم</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var u in filteredUsers)
+                            {
+                                <tr style="@(!u.IsEnabled ? "background:rgba(0,0,0,0.02);opacity:0.85" : "")">
+                                    <td class="fw-bold">
+                                        <span>@u.FullNameAr</span>
+                                    </td>
+                                    <td>
+                                        <code dir="ltr" style="font-size:0.85rem">@u.Email</code>
+                                    </td>
+                                    <td>
+                                        <span class="badge" style="background:rgba(18,62,86,0.08);color:var(--brand-primary);">
+                                            🏛️ @u.PrimaryCourtNameAr
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <span class="badge @GetRoleBadgeClass(u.RoleCode)">
+                                            @u.RoleNameAr
+                                        </span>
+                                    </td>
+                                    <td>
+                                        @if (u.SessionScopeMode == "AllSessions")
+                                        {
+                                            <span class="badge badge-success" title="مصرح له بكافة جلسات المحكمة">
+                                                كافة الجلسات
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            <span class="badge badge-warning" title="جلسات محددة مسندة">
+                                                جلسات مخصصة (@u.GrantedSessionsCount)
+                                            </span>
+                                        }
+                                    </td>
+                                    <td>
+                                        <span class="badge @(u.IsEnabled ? "badge-success" : "badge-danger")">
+                                            @(u.IsEnabled ? "مفعل" : "معطل")
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <div class="d-flex align-center justify-content-center gap-1 flex-wrap">
+                                            @* تعديل البيانات *@
+                                            <button class="btn btn-sm btn-outline-secondary" title="تعديل البيانات"
+                                                    @onclick="() => OpenEditModal(u)">
+                                                ✏️ تعديل
+                                            </button>
+
+                                            @* تغيير كلمة المرور *@
+                                            <button class="btn btn-sm btn-outline-secondary" title="تغيير كلمة المرور"
+                                                    @onclick="() => OpenPasswordModal(u)">
+                                                🔑 كلمة المرور
+                                            </button>
+
+                                            @* إسناد الجلسات *@
+                                            <button class="btn btn-sm btn-outline-secondary" title="إسناد المحاكم الجزئية والدوائر والجلسات"
+                                                    @onclick="() => OpenScopeModal(u)">
+                                                🛡️ إسناد الجلسات
+                                            </button>
+
+                                            @* تفعيل / إيقاف *@
+                                            <button class="btn btn-sm @(u.IsEnabled ? "btn-outline-danger" : "btn-outline-success")"
+                                                    title="@(u.IsEnabled ? "إيقاف الحساب" : "تفعيل الحساب")"
+                                                    @onclick="() => ToggleUserStatus(u.Id)">
+                                                @(u.IsEnabled ? "إيقاف" : "تفعيل")
+                                            </button>
+
+                                            @* حذف *@
+                                            <button class="btn btn-sm btn-danger" title="حذف المستخدم"
+                                                    @onclick="() => ConfirmDeleteUser(u)">
+                                                🗑️
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@* ==================== مودال 1: إنشاء مستخدم جديد ==================== *@
+@if (showCreateModal)
+{
+    <div class="modal-backdrop">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 class="modal-title">👤 إضافة مستخدم جديد للنظام</h3>
+                    <button class="btn-close" @onclick="CloseModals">✕</button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">الاسم الكامل بالعربية <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" placeholder="مثال: أحمد مصطفى إبراهيم" @bind="newModel.FullNameAr" />
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">البريد الإلكتروني <span class="text-danger">*</span></label>
+                            <input type="email" class="form-control" dir="ltr" placeholder="user@court.gov.eg" @bind="newModel.Email" />
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">كلمة المرور <span class="text-danger">*</span></label>
+                            <input type="password" class="form-control" dir="ltr" placeholder="6 أحرف على الأقل" @bind="newModel.Password" />
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">تأكيد كلمة المرور <span class="text-danger">*</span></label>
+                            <input type="password" class="form-control" dir="ltr" placeholder="إعادة كتابة كلمة المرور" @bind="newModel.ConfirmPassword" />
+                        </div>
+
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">المحكمة الابتدائية التابع لها <span class="text-danger">*</span></label>
+                            @if (CourtState.IsSystemAdmin)
+                            {
+                                <select class="form-control" @bind="newModel.PrimaryCourtId">
+                                    <option value="0">-- اختر المحكمة الابتدائية --</option>
+                                    @foreach (var c in CourtState.AllowedPrimaryCourts)
+                                    {
+                                        <option value="@c.Id">@c.NameAr</option>
+                                    }
+                                </select>
+                            }
+                            else
+                            {
+                                <input type="text" class="form-control" value="@CourtState.SelectedPrimaryCourtName" disabled style="background:#eef1f5" />
+                            }
+                        </div>
+
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">الدور الوظيفي <span class="text-danger">*</span></label>
+                            <select class="form-control" @bind="newModel.RoleId">
+                                <option value="0">-- اختر الدور --</option>
+                                @foreach (var r in availableRoles)
+                                {
+                                    <option value="@r.Id">@r.NameAr</option>
+                                }
+                            </select>
+                        </div>
+
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">نطاق الجلسات المصرح بها:</label>
+                            <div class="d-flex gap-4 mt-1">
+                                <label class="d-flex align-center gap-2" style="cursor:pointer">
+                                    <input type="radio" name="createScopeMode" value="AllSessions"
+                                           checked="@(newModel.SessionScopeMode == "AllSessions")"
+                                           @onchange='() => newModel.SessionScopeMode = "AllSessions"' />
+                                    <span>كافة جلسات المحكمة ومأمورياتها ومحاكمها الجزئية</span>
+                                </label>
+                                <label class="d-flex align-center gap-2" style="cursor:pointer">
+                                    <input type="radio" name="createScopeMode" value="SelectedSessions"
+                                           checked="@(newModel.SessionScopeMode == "SelectedSessions")"
+                                           @onchange='() => newModel.SessionScopeMode = "SelectedSessions"' />
+                                    <span>تحديد جلسات مخصصة (يتم اختيارها لاحقاً)</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-outline-secondary" @onclick="CloseModals" disabled="@isActionInProgress">إلغاء</button>
+                    <button class="btn btn-primary" @onclick="HandleCreateUser" disabled="@isActionInProgress">
+                        @if (isActionInProgress) { <span>جاري الإنشاء...</span> } else { <span>✅ إنشاء الحساب</span> }
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* ==================== مودال 2: تعديل بيانات المستخدم ==================== *@
+@if (showEditModal && editingUser != null)
+{
+    <div class="modal-backdrop">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 class="modal-title">✏️ تعديل بيانات المستخدم</h3>
+                    <button class="btn-close" @onclick="CloseModals">✕</button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">الاسم الكامل <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" @bind="editModel.FullNameAr" />
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">البريد الإلكتروني <span class="text-danger">*</span></label>
+                            <input type="email" class="form-control" dir="ltr" @bind="editModel.Email" />
+                        </div>
+                        @if (CourtState.IsSystemAdmin)
+                        {
+                            <div class="col-12">
+                                <label class="form-label fw-semibold">المحكمة الابتدائية:</label>
+                                <select class="form-control" @bind="editModel.PrimaryCourtId">
+                                    @foreach (var c in CourtState.AllowedPrimaryCourts)
+                                    {
+                                        <option value="@c.Id">@c.NameAr</option>
+                                    }
+                                </select>
+                            </div>
+                        }
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">الدور الوظيفي:</label>
+                            <select class="form-control" @bind="editModel.RoleId">
+                                @foreach (var r in availableRoles)
+                                {
+                                    <option value="@r.Id">@r.NameAr</option>
+                                }
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-outline-secondary" @onclick="CloseModals" disabled="@isActionInProgress">إلغاء</button>
+                    <button class="btn btn-primary" @onclick="HandleUpdateUser" disabled="@isActionInProgress">
+                        حفظ التعديلات
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* ==================== مودال 3: تغيير كلمة المرور ==================== *@
+@if (showPasswordModal && passwordTargetUser != null)
+{
+    <div class="modal-backdrop">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 class="modal-title">🔑 تغيير كلمة المرور للمستخدم</h3>
+                    <button class="btn-close" @onclick="CloseModals">✕</button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-secondary mb-3">
+                        سيتم تعيين كلمة مرور جديدة مباشرة للمستخدم: <strong>@passwordTargetUser.FullNameAr</strong>
+                    </p>
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">كلمة المرور الجديدة <span class="text-danger">*</span></label>
+                        <input type="password" class="form-control" dir="ltr" placeholder="6 أحرف على الأقل" @bind="newPasswordInput" />
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-outline-secondary" @onclick="CloseModals" disabled="@isActionInProgress">إلغاء</button>
+                    <button class="btn btn-primary" @onclick="HandleResetPassword" disabled="@isActionInProgress">
+                        تأكيد وحفظ كلمة المرور
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* ==================== مودال 4: إسناد المحاكم الجزئية والدوائر والجلسات ==================== *@
+@if (showScopeModal && scopeTargetUser != null)
+{
+    <div class="modal-backdrop">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 class="modal-title">
+                        🛡️ إسناد الجلسات والمحاكم الجزئية والدوائر للمستخدم: @scopeTargetUser.FullNameAr
+                    </h3>
+                    <button class="btn-close" @onclick="CloseModals">✕</button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-4 p-3" style="background:var(--surface-bg);border-radius:var(--radius-md);">
+                        <label class="form-label fw-bold mb-2">نوع نطاق الجلسات:</label>
+                        <div class="d-flex gap-4">
+                            <label class="d-flex align-center gap-2" style="cursor:pointer">
+                                <input type="radio" name="scopeMode" value="AllSessions"
+                                       checked="@(scopeMode == "AllSessions")"
+                                       @onchange='() => scopeMode = "AllSessions"' />
+                                <span class="fw-semibold">كافة الجلسات (المستخدم يرى ويدخل لكافة جلسات المحكمة وفروعها)</span>
+                            </label>
+                            <label class="d-flex align-center gap-2" style="cursor:pointer">
+                                <input type="radio" name="scopeMode" value="SelectedSessions"
+                                       checked="@(scopeMode == "SelectedSessions")"
+                                       @onchange='() => scopeMode = "SelectedSessions"' />
+                                <span class="fw-semibold">جلسات مخصصة ومحددة (اختر الجلسات من الجدول أدناه)</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    @if (scopeMode == "SelectedSessions")
+                    {
+                        <div class="d-flex justify-between align-center mb-2">
+                            <span class="fw-semibold" style="font-size:0.9rem">
+                                حدد الجلسات المصرح بها لهذا المستخدم (مجموع المتاح: @availableSessions.Count):
+                            </span>
+                            <div class="d-flex gap-2">
+                                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="SelectAllSessions">تحديد الكل</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="DeselectAllSessions">إلغاء التحديد</button>
+                            </div>
+                        </div>
+
+                        <div class="table-wrapper" style="max-height:420px;overflow-y:auto;">
+                            <table class="table table-sm">
+                                <thead style="position:sticky;top:0;background:var(--surface-card);z-index:2">
+                                    <tr>
+                                        <th style="width:40px;text-align:center">تحديد</th>
+                                        <th>اسم الجلسة</th>
+                                        <th>وصف الميعاد والانعقاد</th>
+                                        <th>الدائرة التابعة</th>
+                                        <th>المحكمة / المأمورية</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var s in availableSessions)
+                                    {
+                                        <tr style="cursor:pointer" @onclick="() => ToggleSessionSelection(s.SessionId)">
+                                            <td style="text-align:center" @onclick:stopPropagation="true">
+                                                <input type="checkbox"
+                                                       checked="@selectedSessionIdsSet.Contains(s.SessionId)"
+                                                       @onchange="() => ToggleSessionSelection(s.SessionId)" />
+                                            </td>
+                                            <td class="fw-bold">@s.SessionNameAr</td>
+                                            <td style="color:var(--text-secondary)">@s.ScheduleDescription</td>
+                                            <td><span class="badge badge-secondary">@s.CircuitNameAr</span></td>
+                                            <td><span class="badge badge-info">@s.CourtUnitNameAr</span></td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-outline-secondary" @onclick="CloseModals" disabled="@isActionInProgress">إلغاء</button>
+                    <button class="btn btn-primary" @onclick="HandleSaveScope" disabled="@isActionInProgress">
+                        حفظ إسناد النطاق
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private bool isAuthorized = false;
+    private bool isLoading = true;
+    private bool isActionInProgress = false;
+    private string? statusMessage;
+    private bool isError = false;
+
+    // Users data
+    private List<JudicialStatistics.Web.Services.ManagedUserDto> allUsers = new();
+    private List<JudicialStatistics.Web.Services.ManagedUserDto> filteredUsers = new();
+
+    // Filters
+    private string searchTerm = string.Empty;
+    private long selectedFilterCourtId = 0;
+    private string selectedStatusFilter = string.Empty;
+
+    // Roles
+    private List<(long Id, string Code, string NameAr)> availableRoles = new();
+
+    // Modals state
+    private bool showCreateModal = false;
+    private bool showEditModal = false;
+    private bool showPasswordModal = false;
+    private bool showScopeModal = false;
+
+    // Create model
+    private JudicialStatistics.Web.Services.UserCreateModel newModel = new();
+
+    // Edit model
+    private JudicialStatistics.Web.Services.ManagedUserDto? editingUser;
+    private JudicialStatistics.Web.Services.UserUpdateModel editModel = new();
+
+    // Password reset model
+    private JudicialStatistics.Web.Services.ManagedUserDto? passwordTargetUser;
+    private string newPasswordInput = string.Empty;
+
+    // Scope model
+    private JudicialStatistics.Web.Services.ManagedUserDto? scopeTargetUser;
+    private string scopeMode = "AllSessions";
+    private List<JudicialStatistics.Web.Services.SessionAssignmentItemDto> availableSessions = new();
+    private HashSet<long> selectedSessionIdsSet = new();
+
+    private bool _isDataLoading = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+            if (auth.User.Identity?.IsAuthenticated == true)
+            {
+                await CourtState.EnsureInitializedAsync(auth.User);
+            }
+
+            isAuthorized = CourtState.IsSystemAdmin || CourtState.IsScopeAdmin;
+            if (!isAuthorized)
+            {
+                isLoading = false;
+                return;
+            }
+
+            CourtState.OnChange += OnCourtStateChanged;
+            await ReloadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "خطأ في تهيئة الصفحة: " + ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void OnCourtStateChanged()
+    {
+        InvokeAsync(async () =>
+        {
+            isAuthorized = CourtState.IsSystemAdmin || CourtState.IsScopeAdmin;
+            if (isAuthorized)
+            {
+                await ReloadDataAsync();
+            }
+            StateHasChanged();
+        });
+    }
+
+    private async Task ReloadDataAsync()
+    {
+        if (_isDataLoading) return;
+        _isDataLoading = true;
+        try
+        {
+            selectedFilterCourtId = CourtState.SelectedPrimaryCourtId ?? 0;
+            await LoadRolesAsync();
+            await LoadUsersAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "حدث خطأ أثناء تحميل البيانات: " + ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            _isDataLoading = false;
+        }
+    }
+
+    private async Task LoadRolesAsync()
+    {
+        var rolesQuery = DbContext.AppRoles.AsQueryable();
+        if (!CourtState.IsSystemAdmin)
+        {
+            // ScopeAdmin cannot assign SystemAdmin role
+            rolesQuery = rolesQuery.Where(r => r.Code != RoleCodes.SystemAdmin);
+        }
+
+        var rolesList = await rolesQuery
+            .OrderBy(r => r.Id)
+            .Select(r => new { r.Id, r.Code, r.NameAr })
+            .ToListAsync();
+
+        availableRoles = rolesList.Select(r => (r.Id, r.Code, r.NameAr)).ToList();
+    }
+
+    private async Task LoadUsersAsync()
+    {
+        isLoading = true;
+        try
+        {
+            long? courtFilter = selectedFilterCourtId > 0 ? selectedFilterCourtId : (CourtState.IsSystemAdmin ? null : CourtState.SelectedPrimaryCourtId);
+            allUsers = await UserService.GetUsersAsync(courtFilter, CourtState.IsSystemAdmin, CourtState.CurrentAppUserId);
+            ApplyFilters();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "حدث خطأ أثناء تحميل المستخدمين: " + ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void ApplyFilters()
+    {
+        var query = allUsers.AsEnumerable();
+
+        if (!string.IsNullOrWhiteSpace(searchTerm))
+        {
+            query = query.Where(u => u.FullNameAr.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
+                                     u.Email.Contains(searchTerm, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (selectedFilterCourtId > 0 && CourtState.IsSystemAdmin)
+        {
+            query = query.Where(u => u.PrimaryCourtId == selectedFilterCourtId);
+        }
+
+        if (selectedStatusFilter == "active")
+        {
+            query = query.Where(u => u.IsEnabled);
+        }
+        else if (selectedStatusFilter == "suspended")
+        {
+            query = query.Where(u => !u.IsEnabled);
+        }
+
+        filteredUsers = query.ToList();
+    }
+
+    private void OnSearchChanged(ChangeEventArgs e)
+    {
+        searchTerm = e.Value?.ToString() ?? string.Empty;
+        ApplyFilters();
+    }
+
+    private async Task OnFilterCourtChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var courtId))
+        {
+            selectedFilterCourtId = courtId;
+            await LoadUsersAsync();
+        }
+    }
+
+    private void OnStatusFilterChanged(ChangeEventArgs e)
+    {
+        selectedStatusFilter = e.Value?.ToString() ?? string.Empty;
+        ApplyFilters();
+    }
+
+    // ──────────────── Modal Triggers ────────────────
+
+    private void OpenCreateModal()
+    {
+        newModel = new JudicialStatistics.Web.Services.UserCreateModel
+        {
+            PrimaryCourtId = CourtState.SelectedPrimaryCourtId ?? (CourtState.AllowedPrimaryCourts.FirstOrDefault()?.Id ?? 0),
+            RoleId = availableRoles.Count > 0 ? availableRoles[0].Id : 0,
+            SessionScopeMode = "AllSessions"
+        };
+        showCreateModal = true;
+    }
+
+    private void OpenEditModal(JudicialStatistics.Web.Services.ManagedUserDto u)
+    {
+        editingUser = u;
+        editModel = new JudicialStatistics.Web.Services.UserUpdateModel
+        {
+            Id = u.Id,
+            FullNameAr = u.FullNameAr,
+            Email = u.Email,
+            PrimaryCourtId = u.PrimaryCourtId,
+            RoleId = u.RoleId
+        };
+        showEditModal = true;
+    }
+
+    private void OpenPasswordModal(JudicialStatistics.Web.Services.ManagedUserDto u)
+    {
+        passwordTargetUser = u;
+        newPasswordInput = string.Empty;
+        showPasswordModal = true;
+    }
+
+    private async Task OpenScopeModal(JudicialStatistics.Web.Services.ManagedUserDto u)
+    {
+        scopeTargetUser = u;
+        scopeMode = u.SessionScopeMode ?? "AllSessions";
+        availableSessions = await UserService.GetAvailableSessionsForScopeAsync(u.PrimaryCourtId, u.Id);
+        selectedSessionIdsSet = availableSessions.Where(s => s.IsSelected).Select(s => s.SessionId).ToHashSet();
+        showScopeModal = true;
+    }
+
+    private void CloseModals()
+    {
+        showCreateModal = false;
+        showEditModal = false;
+        showPasswordModal = false;
+        showScopeModal = false;
+    }
+
+    // ──────────────── Action Handlers ────────────────
+
+    private async Task HandleCreateUser()
+    {
+        isActionInProgress = true;
+        try
+        {
+            if (!CourtState.IsSystemAdmin)
+            {
+                newModel.PrimaryCourtId = CourtState.SelectedPrimaryCourtId ?? 0;
+            }
+
+            var (success, msg, _) = await UserService.CreateUserAsync(newModel, CourtState.IsSystemAdmin, CourtState.CurrentAppUserId);
+            statusMessage = msg;
+            isError = !success;
+
+            if (success)
+            {
+                CloseModals();
+                await LoadUsersAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "حدث خطأ: " + ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            isActionInProgress = false;
+        }
+    }
+
+    private async Task HandleUpdateUser()
+    {
+        isActionInProgress = true;
+        try
+        {
+            var (success, msg) = await UserService.UpdateUserAsync(editModel, CourtState.IsSystemAdmin, CourtState.CurrentAppUserId);
+            statusMessage = msg;
+            isError = !success;
+
+            if (success)
+            {
+                CloseModals();
+                await LoadUsersAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "حدث خطأ: " + ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            isActionInProgress = false;
+        }
+    }
+
+    private async Task HandleResetPassword()
+    {
+        if (passwordTargetUser == null) return;
+        isActionInProgress = true;
+        try
+        {
+            var (success, msg) = await UserService.ResetPasswordAsync(
+                passwordTargetUser.Id, 
+                newPasswordInput, 
+                CourtState.IsSystemAdmin, 
+                CourtState.CurrentAppUserId);
+
+            statusMessage = msg;
+            isError = !success;
+
+            if (success)
+            {
+                CloseModals();
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "حدث خطأ: " + ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            isActionInProgress = false;
+        }
+    }
+
+    private async Task ToggleUserStatus(long userId)
+    {
+        try
+        {
+            var (success, msg) = await UserService.ToggleUserActiveAsync(userId);
+            statusMessage = msg;
+            isError = !success;
+            await LoadUsersAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "حدث خطأ: " + ex.Message;
+            isError = true;
+        }
+    }
+
+    private async Task ConfirmDeleteUser(JudicialStatistics.Web.Services.ManagedUserDto u)
+    {
+        try
+        {
+            var (success, msg) = await UserService.DeleteUserAsync(u.Id);
+            statusMessage = msg;
+            isError = !success;
+            await LoadUsersAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "حدث خطأ: " + ex.Message;
+            isError = true;
+        }
+    }
+
+    private void ToggleSessionSelection(long sessionId)
+    {
+        if (selectedSessionIdsSet.Contains(sessionId))
+            selectedSessionIdsSet.Remove(sessionId);
+        else
+            selectedSessionIdsSet.Add(sessionId);
+    }
+
+    private void SelectAllSessions()
+    {
+        selectedSessionIdsSet = availableSessions.Select(s => s.SessionId).ToHashSet();
+    }
+
+    private void DeselectAllSessions()
+    {
+        selectedSessionIdsSet.Clear();
+    }
+
+    private async Task HandleSaveScope()
+    {
+        if (scopeTargetUser == null) return;
+        isActionInProgress = true;
+        try
+        {
+            var (success, msg) = await UserService.SaveUserSessionScopeAsync(
+                scopeTargetUser.Id,
+                scopeTargetUser.PrimaryCourtId,
+                scopeMode,
+                selectedSessionIdsSet.ToList()
+            );
+
+            statusMessage = msg;
+            isError = !success;
+
+            if (success)
+            {
+                CloseModals();
+                await LoadUsersAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "حدث خطأ: " + ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            isActionInProgress = false;
+        }
+    }
+
+    private static string GetRoleBadgeClass(string? code) => code switch
+    {
+        RoleCodes.SystemAdmin => "badge-primary",
+        RoleCodes.ScopeAdmin => "badge-info",
+        RoleCodes.Approver => "badge-success",
+        RoleCodes.Reviewer => "badge-warning",
+        RoleCodes.DataEntry => "badge-secondary",
+        _ => "badge-secondary"
+    };
+
+    public void Dispose()
+    {
+        CourtState.OnChange -= OnCourtStateChanged;
+    }
+}

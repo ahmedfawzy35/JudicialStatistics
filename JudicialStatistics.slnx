@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="JudicialStatistics.Application/JudicialStatistics.Application.csproj" />
+  <Project Path="JudicialStatistics.Domain/JudicialStatistics.Domain.csproj" />
+  <Project Path="JudicialStatistics.Infrastructure/JudicialStatistics.Infrastructure.csproj" />
+  <Project Path="JudicialStatistics.Tests/JudicialStatistics.Tests.csproj" />
+  <Project Path="JudicialStatistics.Web/JudicialStatistics.Web.csproj" />
+</Solution>

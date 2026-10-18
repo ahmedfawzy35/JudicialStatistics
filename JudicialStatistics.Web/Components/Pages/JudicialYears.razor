@@ -1,0 +1,687 @@
+@page "/judicial-years"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@implements IDisposable
+@inject IJudicialYearsService JudicialYearsService
+@inject ICourtsService CourtsService
+@inject JudicialStatistics.Web.Services.CurrentCourtState CourtState
+@inject AuthenticationStateProvider AuthStateProvider
+
+<PageTitle>الأعوام القضائية وفترات الإحصاء — الإحصاء القضائي</PageTitle>
+
+@if (isCheckingAuth)
+{
+    <div class="d-flex align-center gap-2 p-4">
+        <div class="spinner"></div>
+        <span>جاري التحقق من الصلاحيات...</span>
+    </div>
+}
+else if (!CourtState.IsSystemAdmin && !CourtState.IsScopeAdmin && !CourtState.CanManagePeriodStatus)
+{
+    <div class="alert alert-danger" style="margin:2rem auto;max-width:600px;">
+        <h4>⛔ غير مصرح بالوصول</h4>
+        <p>إدارة الأعوام القضائية وفتح وإغلاق الفترات الإحصائية مخصصة لمدير النظام ورئيس قسم الإحصاء (مدير النطاق).</p>
+        <a href="/" class="btn btn-outline-secondary mt-2">العودة للرئيسية</a>
+    </div>
+}
+else
+{
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📅 الأعوام القضائية وفترات الإحصاء</h1>
+        <p class="page-subtitle">
+            إدارة الأعوام القضائية وفتراتها الشهرية الـ 12 والتحكم في فتح وإغلاق إمكانية إدخال وتعديل الإحصائيات لكل محكمة
+        </p>
+    </div>
+    @if (CourtState.IsSystemAdmin)
+    {
+        <div class="page-actions">
+            <button class="btn btn-primary" @onclick="OpenAddModal">
+                ➕ إنشاء عام قضائي جديد
+            </button>
+        </div>
+    }
+</div>
+
+@* شريط النطاق / المحكمة الابتدائية *@
+<div class="card mb-4" style="background:var(--surface);border-left:4px solid var(--brand-primary)">
+    <div class="card-body d-flex justify-between align-center flex-wrap gap-3" style="padding:0.85rem 1.25rem">
+        <div class="d-flex align-center gap-3">
+            <span style="font-size:1.5rem">🏛️</span>
+            <div>
+                <div style="font-size:0.8rem;color:var(--text-secondary)">نطاق المحكمة الحالي:</div>
+                <div class="fw-bold" style="font-size:1.05rem;color:var(--brand-primary)">@CourtState.SelectedPrimaryCourtName</div>
+            </div>
+            @if (CourtState.IsScopeAdmin && !CourtState.IsSystemAdmin)
+            {
+                <span class="badge badge-info" style="font-size:0.8rem">مدير النطاق / رئيس قسم الإحصاء</span>
+            }
+        </div>
+
+        @if (CourtState.CanSwitchCourt)
+        {
+            <div class="d-flex align-center gap-2">
+                <label class="form-label mb-0 small text-secondary">تبديل المحكمة الابتدائية:</label>
+                <select class="form-control form-control-sm" style="width:auto;min-width:220px;"
+                        value="@CourtState.SelectedPrimaryCourtId"
+                        @onchange="OnPrimaryCourtChanged">
+                    @foreach (var c in CourtState.AllowedPrimaryCourts)
+                    {
+                        <option value="@c.Id">@c.NameAr</option>
+                    }
+                </select>
+            </div>
+        }
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success") mb-4">
+        <span>@(isError ? "⚠️" : "✅") @statusMessage</span>
+    </div>
+}
+
+<div class="card mb-5">
+    <div class="card-header">
+        <span class="card-title">قائمة الأعوام القضائية</span>
+    </div>
+    <div class="card-body" style="padding:0">
+        @if (years is null)
+        {
+            <div style="padding:1.5rem" class="d-flex align-center gap-2">
+                <div class="spinner"></div>
+                <span>جاري تحميل الأعوام القضائية...</span>
+            </div>
+        }
+        else if (years.Count == 0)
+        {
+            <div style="padding:2rem;text-align:center;color:var(--text-muted)">
+                <div>لا توجد أعوام قضائية مسجلة حتى الآن لهذا النطاق.</div>
+                @if (CourtState.IsSystemAdmin)
+                {
+                    <button class="btn btn-primary btn-sm mt-3" @onclick="OpenAddModal">إنشاء العام القضائي الأول</button>
+                }
+            </div>
+        }
+        else
+        {
+            <div class="table-wrapper" style="border:none">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>العام القضائي</th>
+                            <th>نطاق التقرير</th>
+                            <th>تاريخ البداية</th>
+                            <th>تاريخ النهاية</th>
+                            <th>عدد الفترات</th>
+                            <th>الحالة</th>
+                            <th>الإجراءات</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var y in years)
+                        {
+                            <tr style="@(selectedYearId == y.Id ? "background:var(--surface-hover)" : "")">
+                                <td class="fw-bold">@y.NameAr</td>
+                                <td>@y.ReportingScopeNameAr</td>
+                                <td>@y.StartDate.ToString("yyyy-MM-dd")</td>
+                                <td>@y.EndDate.ToString("yyyy-MM-dd")</td>
+                                <td>
+                                    <span class="badge badge-info">@y.PeriodsCount شهراً</span>
+                                </td>
+                                <td>
+                                    @if (y.Status == "Active")
+                                    {
+                                        <span class="badge badge-success">نشط (حالي)</span>
+                                    }
+                                    else if (y.Status == "Closed")
+                                    {
+                                        <span class="badge badge-danger">مغلق</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="badge badge-muted">مسودة</span>
+                                    }
+                                </td>
+                                <td>
+                                    <div class="d-flex gap-1">
+                                        <button class="btn btn-sm btn-outline" @onclick="() => SelectYear(y.Id)">
+                                            @(selectedYearId == y.Id ? "إخفاء الفترات" : "عرض الفترات")
+                                        </button>
+                                        @if (CourtState.IsSystemAdmin)
+                                        {
+                                            @if (y.Status != "Active")
+                                            {
+                                                <button class="btn btn-sm btn-outline-secondary" @onclick='() => SetStatus(y.Id, "Active")'>
+                                                    تفعيل
+                                                </button>
+                                            }
+                                            @if (y.Status == "Active")
+                                            {
+                                                <button class="btn btn-sm btn-danger" @onclick='() => SetStatus(y.Id, "Closed")'>
+                                                    إغلاق
+                                                </button>
+                                            }
+                                        }
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+</div>
+
+@if (selectedYearId.HasValue && periods is not null)
+{
+    <div class="card mb-5">
+        <div class="card-header d-flex justify-between align-center flex-wrap gap-2">
+            <span class="card-title">🗓️ الفترات الإحصائية الشهرية للعام (@selectedYearName)</span>
+            <span style="font-size:0.85rem;color:var(--text-secondary)">
+                كل محكمة تستطيع فتح أو إغلاق الشهر لنفسها — اضغط على <strong>«🏛️ إدارة المحاكم»</strong> للتحكم التفصيلي بكل محكمة
+            </span>
+        </div>
+        <div class="card-body">
+            <div class="stats-grid" style="grid-template-columns: repeat(auto-fill, minmax(210px, 1fr))">
+                @foreach (var p in periods)
+                {
+                    <div class="stat-card" style="padding:1rem;flex-direction:column;align-items:flex-start;border:1px solid @(p.IsOpenForEntry ? "var(--border-color, #e2e8f0)" : "#fecaca");background:@(p.IsOpenForEntry ? "var(--surface)" : "#fff5f5")">
+                        <div class="d-flex justify-between align-center" style="width:100%">
+                            <span class="badge badge-secondary">شهر @p.MonthStartDate.Month</span>
+                            <span style="font-size:.8rem;color:var(--text-muted)">@p.MonthStartDate.Year</span>
+                        </div>
+                        <div style="font-size:1.15rem;font-weight:700;margin-top:.5rem">
+                            @p.MonthNameAr
+                        </div>
+                        <div style="font-size:.75rem;color:var(--text-secondary);margin-top:.25rem">
+                            تبدأ من: @p.MonthStartDate.ToString("yyyy-MM-dd")
+                        </div>
+
+                        <div class="d-flex justify-between align-center mt-3 pt-2" style="width:100%;border-top:1px dashed var(--border-color, #e2e8f0);">
+                            @if (p.IsOpenForEntry)
+                            {
+                                <span class="badge badge-success" style="font-size:.75rem">🟢 مفتوح للإدخال</span>
+                            }
+                            else
+                            {
+                                <span class="badge badge-danger" style="font-size:.75rem">🔴 مغلق للإدخال</span>
+                            }
+
+                            @if (CourtState.CanManagePeriodStatus)
+                            {
+                                <button type="button" class="btn btn-sm @(p.IsOpenForEntry ? "btn-outline-danger" : "btn-outline-success")"
+                                        style="font-size:0.75rem;padding:2px 8px;"
+                                        disabled="@isTogglingPeriod"
+                                        @onclick="() => TogglePeriodStatus(p.Id, !p.IsOpenForEntry)">
+                                    @(p.IsOpenForEntry ? "إغلاق للشهر" : "فتح للشهر")
+                                </button>
+                            }
+                        </div>
+
+                        @if (CourtState.CanManagePeriodStatus)
+                        {
+                            <div class="mt-2 pt-2" style="width:100%;border-top:1px solid var(--border-color, #f1f5f9)">
+                                <button type="button" class="btn btn-xs btn-outline-primary" style="width:100%;font-size:0.75rem;padding:4px 8px"
+                                        @onclick="() => OpenCourtStatusesModal(p)">
+                                    🏛️ فتح/إغلاق المحاكم التابعة
+                                </button>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@* Modal إدارة حالة فتح وإغلاق المحاكم للشهر *@
+@if (showCourtStatusesModal && modalPeriod is not null)
+{
+    <div class="modal-backdrop" @onclick="CloseCourtStatusesModal">
+        <div class="modal" style="max-width:850px;width:95%" @onclick:stopPropagation>
+            <div class="modal-header d-flex justify-between align-center">
+                <div>
+                    <span class="modal-title">🏛️ حالة فتح وإغلاق المحاكم — شهر (@modalPeriod.MonthNameAr @modalPeriod.MonthStartDate.Year)</span>
+                    <div style="font-size:0.85rem;color:var(--text-secondary);margin-top:2px">
+                        نطاق: <strong>@CourtState.SelectedPrimaryCourtName</strong> (كل محكمة تستطيع فتح أو إغلاق الإدخال لنفسها)
+                    </div>
+                </div>
+                <button class="modal-close" @onclick="CloseCourtStatusesModal">✕</button>
+            </div>
+
+            <div class="modal-body">
+                <div class="d-flex justify-between align-center mb-3 p-2 flex-wrap gap-2" style="background:var(--surface-hover);border-radius:6px">
+                    <span style="font-size:0.9rem;font-weight:600">التحكم الجماعي لكافة محاكم النطاق:</span>
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-sm btn-outline-success" @onclick="() => SetAllCourtsStatus(true)" disabled="@isLoadingCourtStatuses">
+                            🔓 فتح كافة المحاكم
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-danger" @onclick="() => SetAllCourtsStatus(false)" disabled="@isLoadingCourtStatuses">
+                            🔒 إغلاق كافة المحاكم
+                        </button>
+                    </div>
+                </div>
+
+                @if (isLoadingCourtStatuses)
+                {
+                    <div class="d-flex align-center gap-2 p-4">
+                        <div class="spinner"></div>
+                        <span>جاري تحميل بيانات المحاكم وحالات الإدخال...</span>
+                    </div>
+                }
+                else if (modalCourtStatuses is null || modalCourtStatuses.Count == 0)
+                {
+                    <div class="alert alert-info">لا توجد محاكم مسجلة في هذا النطاق.</div>
+                }
+                else
+                {
+                    <div class="table-wrapper" style="max-height:420px;overflow-y:auto">
+                        <table class="table table-sm">
+                            <thead>
+                                <tr>
+                                    <th>المحكمة</th>
+                                    <th>النوع</th>
+                                    <th>حالة الإدخال</th>
+                                    <th>آخر تحديث</th>
+                                    <th>الإجراء</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var cs in modalCourtStatuses)
+                                {
+                                    <tr>
+                                        <td class="fw-bold">
+                                            @if (cs.ParentCourtUnitId == null)
+                                            {
+                                                <span title="المحكمة الابتدائية الأم">🏛️ </span>
+                                            }
+                                            else
+                                            {
+                                                <span>⚖️ </span>
+                                            }
+                                            @cs.CourtNameAr
+                                        </td>
+                                        <td>
+                                            <span class="badge badge-secondary" style="font-size:0.75rem">
+                                                @(cs.ParentCourtUnitId == null ? "محكمة ابتدائية" : cs.CourtKind)
+                                            </span>
+                                        </td>
+                                        <td>
+                                            @if (cs.IsOpenForEntry)
+                                            {
+                                                <span class="badge badge-success" style="font-size:0.75rem">🟢 مفتوح للإدخال</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="badge badge-danger" style="font-size:0.75rem">🔴 مغلق للإدخال</span>
+                                            }
+                                        </td>
+                                        <td style="font-size:0.8rem;color:var(--text-secondary)">
+                                            @if (cs.UpdatedAt.HasValue)
+                                            {
+                                                <span>@cs.UpdatedAt.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span>
+                                                @if (!string.IsNullOrEmpty(cs.UpdatedByUserName))
+                                                {
+                                                    <span class="d-block" style="font-size:0.75rem">(@cs.UpdatedByUserName)</span>
+                                                }
+                                            }
+                                            else
+                                            {
+                                                <span>-</span>
+                                            }
+                                        </td>
+                                        <td>
+                                            <button type="button"
+                                                    class="btn btn-xs @(cs.IsOpenForEntry ? "btn-outline-danger" : "btn-outline-success")"
+                                                    style="padding:3px 10px;font-size:0.75rem"
+                                                    @onclick="() => ToggleSingleCourtStatus(cs.CourtUnitId, !cs.IsOpenForEntry)">
+                                                @(cs.IsOpenForEntry ? "🔒 إغلاق المحكمة" : "🔓 فتح المحكمة")
+                                            </button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" @onclick="CloseCourtStatusesModal">إغلاق</button>
+            </div>
+        </div>
+    </div>
+}
+
+@* Modal إنشاء عام قضائي *@
+@if (showAddModal)
+{
+    <div class="modal-backdrop" @onclick="CloseAddModal">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">➕ إنشاء عام قضائي جديد</span>
+                <button class="modal-close" @onclick="CloseAddModal">✕</button>
+            </div>
+            <EditForm Model="createModel" OnValidSubmit="HandleCreateYear">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> نطاق التقرير</label>
+                        <InputSelect class="form-control" @bind-Value="createModel.ReportingScopeId" required>
+                            @if (scopes is not null)
+                            {
+                                @foreach (var s in scopes)
+                                {
+                                    <option value="@s.Id">@s.NameAr (@s.Code)</option>
+                                }
+                            }
+                        </InputSelect>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> سنة بداية العام القضائي</label>
+                        <InputNumber class="form-control" @bind-Value="createModel.StartYear" min="2020" max="2050" required />
+                        <div style="font-size:.85rem;color:var(--text-secondary);margin-top:.35rem">
+                            العام القضائي سيبدأ من <strong>01-10-@createModel.StartYear</strong> إلى <strong>30-09-@(createModel.StartYear + 1)</strong>
+                            (اسم العام: <strong>@createModel.StartYear/@(createModel.StartYear + 1)</strong>)
+                        </div>
+                    </div>
+
+                    <div class="alert alert-info">
+                        ℹ️ سيتم توليد الـ 12 فترة شهرية تلقائياً من شهر أكتوبر حتى شهر سبتمبر التالي.
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseAddModal">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">
+                        @(isSubmitting ? "جاري الإنشاء..." : "إنشاء العام وتوليد الفترات")
+                    </button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+}
+
+@code {
+    private bool isCheckingAuth = true;
+    private List<JudicialYearDto>? years;
+    private List<ReportingScopeDto>? scopes;
+    private List<StatisticalPeriodDto>? periods;
+    private long? selectedYearId;
+    private string selectedYearName = string.Empty;
+
+    private bool showAddModal = false;
+    private bool isSubmitting = false;
+    private string? statusMessage;
+    private bool isError = false;
+
+    private YearFormModel createModel = new();
+
+    // Modal المحاكم التابعة
+    private bool showCourtStatusesModal = false;
+    private StatisticalPeriodDto? modalPeriod;
+    private List<CourtPeriodStatusDto>? modalCourtStatuses;
+    private bool isLoadingCourtStatuses = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+        if (auth.User.Identity?.IsAuthenticated == true)
+        {
+            await CourtState.EnsureInitializedAsync(auth.User);
+        }
+        isCheckingAuth = false;
+
+        if (CourtState.IsSystemAdmin || CourtState.IsScopeAdmin || CourtState.CanManagePeriodStatus)
+        {
+            CourtState.OnChange += OnCourtStateChanged;
+            await LoadDataAsync();
+        }
+    }
+
+    private void OnCourtStateChanged()
+    {
+        InvokeAsync(async () =>
+        {
+            await LoadDataAsync();
+            StateHasChanged();
+        });
+    }
+
+    private async Task OnPrimaryCourtChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var courtId))
+        {
+            CourtState.SelectPrimaryCourt(courtId);
+            await LoadDataAsync();
+        }
+    }
+
+    private async Task LoadDataAsync()
+    {
+        scopes = await CourtsService.GetReportingScopesAsync();
+
+        long? scopeFilter = null;
+        if (!CourtState.IsSystemAdmin && CourtState.SelectedPrimaryCourtId.HasValue)
+        {
+            var userScope = scopes.FirstOrDefault(s => s.RootCourtUnitId == CourtState.SelectedPrimaryCourtId.Value);
+            if (userScope != null)
+            {
+                scopeFilter = userScope.Id;
+            }
+        }
+        else if (CourtState.IsSystemAdmin && CourtState.SelectedPrimaryCourtId.HasValue)
+        {
+            var selectedScope = scopes.FirstOrDefault(s => s.RootCourtUnitId == CourtState.SelectedPrimaryCourtId.Value);
+            if (selectedScope != null)
+            {
+                scopeFilter = selectedScope.Id;
+            }
+        }
+
+        years = await JudicialYearsService.GetYearsAsync(scopeFilter);
+
+        if (years.Count > 0 && !selectedYearId.HasValue)
+        {
+            var active = years.FirstOrDefault(y => y.Status == "Active") ?? years.First();
+            await SelectYear(active.Id);
+        }
+        else if (selectedYearId.HasValue && years.Any(y => y.Id == selectedYearId.Value))
+        {
+            await SelectYear(selectedYearId.Value);
+        }
+    }
+
+    private async Task SelectYear(long id)
+    {
+        selectedYearId = id;
+        var y = years?.FirstOrDefault(x => x.Id == id);
+        selectedYearName = y?.NameAr ?? string.Empty;
+        periods = await JudicialYearsService.GetPeriodsForYearAsync(id, CourtState.SelectedPrimaryCourtId);
+    }
+
+    private void OpenAddModal()
+    {
+        var currentYear = DateTime.Today.Month >= 10 ? DateTime.Today.Year : DateTime.Today.Year - 1;
+        createModel = new YearFormModel
+        {
+            StartYear = currentYear,
+            ReportingScopeId = scopes?.FirstOrDefault()?.Id ?? 0
+        };
+        showAddModal = true;
+    }
+
+    private void CloseAddModal() => showAddModal = false;
+
+    private async Task HandleCreateYear()
+    {
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            if (createModel.ReportingScopeId == 0 && scopes?.Count > 0)
+            {
+                createModel.ReportingScopeId = scopes[0].Id;
+            }
+
+            var id = await JudicialYearsService.CreateYearAsync(new JudicialYearCreateCommand(
+                createModel.ReportingScopeId,
+                createModel.StartYear
+            ));
+
+            statusMessage = $"تم إنشاء العام القضائي وتوليد 12 فترة شهرية بنجاح.";
+            isError = false;
+            showAddModal = false;
+            await LoadDataAsync();
+            await SelectYear(id);
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private async Task SetStatus(long id, string status)
+    {
+        try
+        {
+            await JudicialYearsService.UpdateStatusAsync(new JudicialYearUpdateStatusCommand(id, status));
+            statusMessage = $"تم تحديث حالة العام القضائي إلى '{status}'.";
+            isError = false;
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+    }
+
+    private bool isTogglingPeriod = false;
+
+    private async Task TogglePeriodStatus(long periodId, bool newStatus)
+    {
+        if (!CourtState.CanManagePeriodStatus) return;
+
+        try
+        {
+            isTogglingPeriod = true;
+            statusMessage = null;
+
+            if (CourtState.SelectedPrimaryCourtId.HasValue)
+            {
+                await JudicialYearsService.SetAllCourtsPeriodEntryStatusAsync(periodId, CourtState.SelectedPrimaryCourtId.Value, newStatus, CourtState.CurrentAppUserId);
+            }
+            else
+            {
+                await JudicialYearsService.SetPeriodEntryStatusAsync(periodId, newStatus);
+            }
+
+            statusMessage = newStatus
+                ? "تم فتح إمكانية إدخال وتعديل الإحصائيات لهذا الشهر بنجاح."
+                : "تم إغلاق إمكانية إدخال وتعديل الإحصائيات لهذا الشهر.";
+            isError = false;
+
+            if (selectedYearId.HasValue)
+            {
+                periods = await JudicialYearsService.GetPeriodsForYearAsync(selectedYearId.Value, CourtState.SelectedPrimaryCourtId);
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            isTogglingPeriod = false;
+        }
+    }
+
+    // ──────────────── Modal المحاكم التفصيلي ────────────────
+    private async Task OpenCourtStatusesModal(StatisticalPeriodDto period)
+    {
+        modalPeriod = period;
+        showCourtStatusesModal = true;
+        await LoadCourtStatusesAsync();
+    }
+
+    private void CloseCourtStatusesModal()
+    {
+        showCourtStatusesModal = false;
+        modalPeriod = null;
+        modalCourtStatuses = null;
+    }
+
+    private async Task LoadCourtStatusesAsync()
+    {
+        if (modalPeriod == null) return;
+        isLoadingCourtStatuses = true;
+        try
+        {
+            modalCourtStatuses = await JudicialYearsService.GetCourtPeriodStatusesAsync(modalPeriod.Id, CourtState.SelectedPrimaryCourtId);
+        }
+        finally
+        {
+            isLoadingCourtStatuses = false;
+        }
+    }
+
+    private async Task ToggleSingleCourtStatus(long courtUnitId, bool newStatus)
+    {
+        if (modalPeriod == null) return;
+        try
+        {
+            await JudicialYearsService.SetCourtPeriodEntryStatusAsync(modalPeriod.Id, courtUnitId, newStatus, CourtState.CurrentAppUserId);
+            await LoadCourtStatusesAsync();
+            if (selectedYearId.HasValue)
+            {
+                periods = await JudicialYearsService.GetPeriodsForYearAsync(selectedYearId.Value, CourtState.SelectedPrimaryCourtId);
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "حدث خطأ أثناء تعديل حالة المحكمة: " + ex.Message;
+            isError = true;
+        }
+    }
+
+    private async Task SetAllCourtsStatus(bool newStatus)
+    {
+        if (modalPeriod == null || !CourtState.SelectedPrimaryCourtId.HasValue) return;
+        try
+        {
+            await JudicialYearsService.SetAllCourtsPeriodEntryStatusAsync(modalPeriod.Id, CourtState.SelectedPrimaryCourtId.Value, newStatus, CourtState.CurrentAppUserId);
+            await LoadCourtStatusesAsync();
+            if (selectedYearId.HasValue)
+            {
+                periods = await JudicialYearsService.GetPeriodsForYearAsync(selectedYearId.Value, CourtState.SelectedPrimaryCourtId);
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "حدث خطأ: " + ex.Message;
+            isError = true;
+        }
+    }
+
+    public void Dispose()
+    {
+        CourtState.OnChange -= OnCourtStateChanged;
+    }
+
+    public class YearFormModel
+    {
+        public long ReportingScopeId { get; set; }
+        public int StartYear { get; set; } = 2025;
+    }
+}

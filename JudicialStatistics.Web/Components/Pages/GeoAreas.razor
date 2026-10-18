@@ -1,0 +1,432 @@
+@page "/geo-areas"
+@rendermode InteractiveServer
+@inject IOrganizationService OrganizationService
+@inject JudicialStatistics.Web.Services.CurrentCourtState CourtState
+
+<PageTitle>إدارة النطاقات الجغرافية — الإحصاء القضائي</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📍 إدارة النطاقات الجغرافية</h1>
+        <p class="page-subtitle">إدارة وتفعيل/تعطيل النطاقات الجغرافية التابعة للمحاكم وتحديد اختصاص الجلسات</p>
+    </div>
+    <div class="page-actions d-flex gap-2">
+        <button class="btn btn-primary" @onclick="OpenAddModal">
+            ➕ إضافة نطاق جغرافي جديد
+        </button>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success") mb-4">
+        <span>@(isError ? "⚠️" : "✅") @statusMessage</span>
+    </div>
+}
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-between align-center flex-wrap gap-2">
+        <span class="card-title">قائمة النطاقات الجغرافية (@filteredAreas.Count نطاق)</span>
+        <div class="d-flex align-center gap-2 flex-wrap">
+            <input type="text" class="form-control form-control-sm" placeholder="🔍 بحث بالاسم أو الكود..."
+                   style="min-width: 220px;"
+                   @bind="searchTerm" @bind:event="oninput" />
+
+            <select class="form-control form-control-sm" @bind="selectedKindFilter" style="min-width: 140px;">
+                <option value="">كل الأنواع</option>
+                <option value="Governorate">محافظة</option>
+                <option value="Markaz">مركز</option>
+                <option value="PoliceStation">قسم شرطة</option>
+                <option value="District">حي</option>
+                <option value="City">مدينة</option>
+                <option value="Village">قرية</option>
+            </select>
+
+            <select class="form-control form-control-sm" @bind="selectedStatusFilter" style="min-width: 130px;">
+                <option value="all">كل الحالات</option>
+                <option value="active">النشطة فقط</option>
+                <option value="inactive">المعطلة فقط</option>
+            </select>
+        </div>
+    </div>
+    <div class="card-body" style="padding:0">
+        @if (isLoading)
+        {
+            <div style="padding:2rem" class="d-flex align-center justify-center gap-2">
+                <div class="spinner"></div>
+                <span>جاري تحميل النطاقات الجغرافية...</span>
+            </div>
+        }
+        else if (filteredAreas.Count == 0)
+        {
+            <div style="padding:2rem;text-align:center" class="text-muted-color">
+                لا توجد نطاقات جغرافية مطابقة للبحث.
+            </div>
+        }
+        else
+        {
+            <div class="table-wrapper" style="border:none">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th style="width:120px">الكود</th>
+                            <th>الاسم العربي</th>
+                            <th>النوع</th>
+                            <th>النطاق الأب</th>
+                            <th style="text-align:center;width:120px">الحالة</th>
+                            <th style="text-align:center;width:180px">الإجراءات</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var area in filteredAreas)
+                        {
+                            <tr style="@(area.IsActive ? "" : "opacity:0.65;background:var(--surface-hover);")">
+                                <td><code>@area.Code</code></td>
+                                <td class="fw-semibold">@area.NameAr</td>
+                                <td>
+                                    <span class="badge badge-info">@GetAreaKindAr(area.AreaKind)</span>
+                                </td>
+                                <td>
+                                    @if (!string.IsNullOrEmpty(area.ParentAreaNameAr))
+                                    {
+                                        <span>@area.ParentAreaNameAr</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-muted-color">—</span>
+                                    }
+                                </td>
+                                <td style="text-align:center">
+                                    @if (area.IsActive)
+                                    {
+                                        <span class="badge badge-success">نشط</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="badge badge-danger">معطل</span>
+                                    }
+                                </td>
+                                <td style="text-align:center">
+                                    <div class="d-flex align-center justify-center gap-1">
+                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenEditModal(area)" title="تعديل">
+                                            ✏️ تعديل
+                                        </button>
+                                        <button class="btn btn-sm @(area.IsActive ? "btn-outline-danger" : "btn-outline-success")"
+                                                @onclick="() => ToggleActive(area)"
+                                                title="@(area.IsActive ? "تعطيل النطاق" : "تفعيل النطاق")">
+                                            @(area.IsActive ? "⛔ تعطيل" : "✅ تفعيل")
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+</div>
+
+@* مودال إضافة نطاق جغرافي *@
+@if (showAddModal)
+{
+    <div class="modal-overlay" @onclick="CloseAddModal">
+        <div class="modal-card" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">➕ إضافة نطاق جغرافي جديد</span>
+                <button class="btn btn-icon btn-outline-secondary" @onclick="CloseAddModal">✕</button>
+            </div>
+            <div class="modal-body">
+                @if (!string.IsNullOrEmpty(modalError))
+                {
+                    <div class="alert alert-danger mb-3">⚠️ @modalError</div>
+                }
+
+                <div class="form-group mb-3">
+                    <label class="form-label">الكود التعريفي (فريد) *</label>
+                    <input type="text" class="form-control" @bind="newAreaCode" placeholder="مثال: GEO-ALX-RAML" />
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">الاسم العربي للنطاق *</label>
+                    <input type="text" class="form-control" @bind="newAreaNameAr" placeholder="مثال: قسم شرطة أول الرمل" />
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">نوع النطاق *</label>
+                    <select class="form-control" @bind="newAreaKind">
+                        <option value="PoliceStation">قسم شرطة</option>
+                        <option value="Markaz">مركز</option>
+                        <option value="District">حي</option>
+                        <option value="City">مدينة</option>
+                        <option value="Village">قرية</option>
+                        <option value="Governorate">محافظة</option>
+                    </select>
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">النطاق الأب التابع له (اختياري)</label>
+                    <select class="form-control" @bind="newAreaParentId">
+                        <option value="">بدون نطاق أب (رئيسي)</option>
+                        @foreach (var parent in allAreas.Where(a => a.AreaKind is "Governorate" or "Markaz" or "City"))
+                        {
+                            <option value="@parent.Id">@parent.NameAr (@GetAreaKindAr(parent.AreaKind))</option>
+                        }
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer d-flex justify-between">
+                <button class="btn btn-outline-secondary" @onclick="CloseAddModal">إلغاء</button>
+                <button class="btn btn-primary" @onclick="SaveAddArea" disabled="@isSaving">
+                    @(isSaving ? "جاري الحفظ..." : "💾 حفظ النطاق")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@* مودال تعديل نطاق جغرافي *@
+@if (showEditModal && editingArea != null)
+{
+    <div class="modal-overlay" @onclick="CloseEditModal">
+        <div class="modal-card" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">✏️ تعديل النطاق الجغرافي: @editingArea.Code</span>
+                <button class="btn btn-icon btn-outline-secondary" @onclick="CloseEditModal">✕</button>
+            </div>
+            <div class="modal-body">
+                @if (!string.IsNullOrEmpty(modalError))
+                {
+                    <div class="alert alert-danger mb-3">⚠️ @modalError</div>
+                }
+
+                <div class="form-group mb-3">
+                    <label class="form-label">الاسم العربي *</label>
+                    <input type="text" class="form-control" @bind="editAreaNameAr" />
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">حالة التفعيل</label>
+                    <div class="d-flex align-center gap-2">
+                        <input type="checkbox" id="editAreaActive" @bind="editAreaIsActive" style="width:18px;height:18px" />
+                        <label for="editAreaActive" class="m-0 fw-semibold">
+                            @(editAreaIsActive ? "النطاق نشط ومتاح لربط الجلسات" : "النطاق معطل (لا يظهر عند إنشاء جلسات جديدة)")
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer d-flex justify-between">
+                <button class="btn btn-outline-secondary" @onclick="CloseEditModal">إلغاء</button>
+                <button class="btn btn-primary" @onclick="SaveEditArea" disabled="@isSaving">
+                    @(isSaving ? "جاري الحفظ..." : "💾 حفظ التعديلات")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<GeographicAreaDto> allAreas = new();
+    private bool isLoading = true;
+    private bool isSaving = false;
+    private string? statusMessage;
+    private bool isError;
+    private string? modalError;
+
+    // Filters
+    private string searchTerm = "";
+    private string selectedKindFilter = "";
+    private string selectedStatusFilter = "all";
+
+    // Modals
+    private bool showAddModal = false;
+    private string newAreaCode = "";
+    private string newAreaNameAr = "";
+    private string newAreaKind = "PoliceStation";
+    private string newAreaParentId = "";
+
+    private bool showEditModal = false;
+    private GeographicAreaDto? editingArea;
+    private string editAreaNameAr = "";
+    private bool editAreaIsActive = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAreasAsync();
+    }
+
+    private async Task LoadAreasAsync()
+    {
+        isLoading = true;
+        try
+        {
+            allAreas = await OrganizationService.GetGeographicAreasAsync(activeOnly: false);
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"خطأ في تحميل النطاقات: {ex.Message}";
+            isError = true;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private List<GeographicAreaDto> filteredAreas
+    {
+        get
+        {
+            var query = allAreas.AsEnumerable();
+
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var term = searchTerm.Trim();
+                query = query.Where(a => a.NameAr.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                                         a.Code.Contains(term, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (!string.IsNullOrWhiteSpace(selectedKindFilter))
+            {
+                query = query.Where(a => a.AreaKind.Equals(selectedKindFilter, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (selectedStatusFilter == "active")
+            {
+                query = query.Where(a => a.IsActive);
+            }
+            else if (selectedStatusFilter == "inactive")
+            {
+                query = query.Where(a => !a.IsActive);
+            }
+
+            return query.ToList();
+        }
+    }
+
+    private string GetAreaKindAr(string kind) => kind switch
+    {
+        "Governorate" => "محافظة",
+        "Markaz" => "مركز",
+        "PoliceStation" => "قسم شرطة",
+        "District" => "حي",
+        "City" => "مدينة",
+        "Village" => "قرية",
+        _ => kind
+    };
+
+    private void OpenAddModal()
+    {
+        newAreaCode = "";
+        newAreaNameAr = "";
+        newAreaKind = "PoliceStation";
+        newAreaParentId = "";
+        modalError = null;
+        showAddModal = true;
+    }
+
+    private void CloseAddModal() => showAddModal = false;
+
+    private async Task SaveAddArea()
+    {
+        if (string.IsNullOrWhiteSpace(newAreaCode))
+        {
+            modalError = "يرجى إدخال كود النطاق الجغرافي.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(newAreaNameAr))
+        {
+            modalError = "يرجى إدخال اسم النطاق الجغرافي.";
+            return;
+        }
+
+        isSaving = true;
+        modalError = null;
+
+        try
+        {
+            long? parentId = long.TryParse(newAreaParentId, out var pid) ? pid : null;
+            await OrganizationService.CreateGeographicAreaAsync(new GeographicAreaCreateCommand(
+                parentId,
+                newAreaCode.Trim(),
+                newAreaNameAr.Trim(),
+                newAreaKind
+            ));
+
+            showAddModal = false;
+            statusMessage = "تم إضافة النطاق الجغرافي بنجاح.";
+            isError = false;
+            await LoadAreasAsync();
+        }
+        catch (Exception ex)
+        {
+            modalError = ex.Message;
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private void OpenEditModal(GeographicAreaDto area)
+    {
+        editingArea = area;
+        editAreaNameAr = area.NameAr;
+        editAreaIsActive = area.IsActive;
+        modalError = null;
+        showEditModal = true;
+    }
+
+    private void CloseEditModal() => showEditModal = false;
+
+    private async Task SaveEditArea()
+    {
+        if (editingArea == null) return;
+        if (string.IsNullOrWhiteSpace(editAreaNameAr))
+        {
+            modalError = "يرجى إدخال اسم النطاق الجغرافي.";
+            return;
+        }
+
+        isSaving = true;
+        modalError = null;
+
+        try
+        {
+            await OrganizationService.UpdateGeographicAreaAsync(new GeographicAreaUpdateCommand(
+                editingArea.Id,
+                editAreaNameAr.Trim(),
+                editAreaIsActive
+            ));
+
+            showEditModal = false;
+            statusMessage = "تم تحديث النطاق الجغرافي بنجاح.";
+            isError = false;
+            await LoadAreasAsync();
+        }
+        catch (Exception ex)
+        {
+            modalError = ex.Message;
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private async Task ToggleActive(GeographicAreaDto area)
+    {
+        try
+        {
+            await OrganizationService.ToggleGeographicAreaActiveAsync(area.Id);
+            statusMessage = $"تم {(area.IsActive ? "تعطيل" : "تفعيل")} النطاق الجغرافي '{area.NameAr}' بنجاح.";
+            isError = false;
+            await LoadAreasAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"خطأ أثناء تغيير حالة النطاق: {ex.Message}";
+            isError = true;
+        }
+    }
+}

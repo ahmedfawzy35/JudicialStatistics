@@ -1,0 +1,741 @@
+@page "/statistics"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@implements IDisposable
+@using Microsoft.AspNetCore.Authorization
+@inject IStatisticsService StatsService
+@inject IJudicialYearsService YearsService
+@inject IOrganizationService OrgService
+@inject NavigationManager Navigation
+@inject IServiceScopeFactory ScopeFactory
+@inject JudicialStatistics.Web.Services.CurrentCourtState CourtState
+
+<PageTitle>الإحصائيات الشهرية — الإحصاء القضائي</PageTitle>
+
+<div class="page-header d-flex justify-between align-center flex-wrap gap-3 mb-4">
+    <div>
+        <h1 class="page-title">📊 الإحصائيات الشهرية</h1>
+        <p class="page-subtitle">إدخال ومراجعة واعتماد الإحصائيات الشهرية للجلسات</p>
+    </div>
+    <div>
+        <a href="/reports/entry-progress" class="btn btn-outline-primary d-flex align-center gap-2">
+            <span>📋 كشف نسبة إدخال الإحصائيات (شاشة كاملة)</span>
+        </a>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success") mb-4">
+        <span>@(isError ? "⚠️" : "✅") @statusMessage</span>
+    </div>
+}
+
+@* ==================== بطاقة اختيار الإحصائية (النموذج المرجعي) ==================== *@
+<section class="setup-card">
+    <div class="setup-heading">
+        <div class="setup-heading-icon">⚖️</div>
+        <div>
+            <h2>اختيار الإحصائية والشهر</h2>
+            <p>اختر الفترة ونوع الإحصائية، ثم حدد المحكمة والدائرة والجلسة المصرح بها لبدء الإدخال أو المراجعة.</p>
+        </div>
+    </div>
+
+    @* أزرار اختيار نوع الإحصائية *@
+    <div class="mb-4">
+        <label class="fw-semibold mb-2 d-block" style="font-size:0.9rem;color:var(--text-secondary)">نوع الإحصائية القضائية:</label>
+        <div class="discipline-pill-group">
+            @foreach (var (code, nameAr) in StatisticalDisciplines.All)
+            {
+                <button type="button"
+                        class="discipline-pill @(selectedDiscipline == code ? "active" : "")"
+                        @onclick="() => OnDisciplineSelected(code)">
+                    @switch (code)
+                    {
+                        case StatisticalDisciplines.Civil:
+                            <span>🏛️ @nameAr</span>
+                            break;
+                        case StatisticalDisciplines.Criminal:
+                            <span>⚖️ @nameAr (سنة واحدة)</span>
+                            break;
+                        case StatisticalDisciplines.Family:
+                            <span>👨‍👩‍👧 @nameAr</span>
+                            break;
+                        case StatisticalDisciplines.Labor:
+                            <span>👷 @nameAr</span>
+                            break;
+                        default:
+                            <span>@(StatisticalDisciplines.GetIcon(code)) @nameAr</span>
+                            break;
+                    }
+                </button>
+            }
+        </div>
+    </div>
+
+    @* حقول التصفية المتتالية *@
+    <div class="setup-fields">
+        @* 0. المحكمة الابتدائية (SaaS Multi-tenant) *@
+        <div>
+            <label>المحكمة الابتدائية:</label>
+            @if (CourtState.CanSwitchCourt)
+            {
+                <select class="form-control" value="@CourtState.SelectedPrimaryCourtId" @onchange="OnPrimaryCourtFilterChanged" style="font-weight:700;color:var(--brand-primary);">
+                    @foreach (var pc in CourtState.AllowedPrimaryCourts)
+                    {
+                        <option value="@pc.Id">@pc.NameAr</option>
+                    }
+                </select>
+            }
+            else
+            {
+                <div style="position:relative;">
+                    <input class="form-control" value="@CourtState.SelectedPrimaryCourtName" disabled style="background:#eef1f5;font-weight:600;color:var(--text-primary);padding-left:2.2rem;" />
+                    <span style="position:absolute;left:0.6rem;top:50%;transform:translateY(-50%);font-size:0.8rem;" title="المحكمة الابتدائية محددة ومغلقة">🔒</span>
+                </div>
+            }
+        </div>
+
+        @* 1. سنة الإحصائية *@
+        <div>
+            <label>سنة الإحصائية (العام القضائي):</label>
+            <select class="form-control" value="@selectedYearId" @onchange="OnYearChanged">
+                @if (years is not null)
+                {
+                    @foreach (var y in years)
+                    {
+                        <option value="@y.Id">@y.NameAr</option>
+                    }
+                }
+            </select>
+        </div>
+
+        @* 2. شهر الإحصائية *@
+        <div>
+            <label>شهر الإحصائية (الفترة):</label>
+            <select class="form-control" value="@selectedPeriodId" @onchange="OnPeriodChanged">
+                @if (periods is not null)
+                {
+                    @foreach (var p in periods)
+                    {
+                        <option value="@p.Id">@p.MonthNameAr (@p.MonthStartDate.ToString("yyyy-MM"))</option>
+                    }
+                }
+            </select>
+        </div>
+
+        @* 3. المحكمة التابعة *@
+        <div>
+            <label>المحكمة التابعة:</label>
+            <select class="form-control" value="@selectedCourtId" @onchange="OnCourtChanged" disabled="@(isLoadingCourts || courts == null || courts.Count == 0)">
+                @if (isLoadingCourts)
+                {
+                    <option value="0">جاري تحميل المحاكم المصرح بها...</option>
+                }
+                else if (courts == null || courts.Count == 0)
+                {
+                    <option value="0">-- لا توجد محاكم تحتوي هذا النوع --</option>
+                }
+                else
+                {
+                    @foreach (var c in courts)
+                    {
+                        <option value="@c.Id">@c.NameAr</option>
+                    }
+                }
+            </select>
+        </div>
+
+        @* 4. الدائرة القضائية *@
+        <div>
+            <label>الدائرة:</label>
+            <select class="form-control" value="@selectedCircuitId" @onchange="OnCircuitChanged" disabled="@(isLoadingCircuits || circuits == null || circuits.Count == 0)">
+                @if (isLoadingCircuits)
+                {
+                    <option value="0">جاري تحميل الدوائر...</option>
+                }
+                else if (circuits == null || circuits.Count == 0)
+                {
+                    <option value="0">-- لا توجد دوائر مطابقة --</option>
+                }
+                else
+                {
+                    @foreach (var cir in circuits)
+                    {
+                        <option value="@cir.Id">@cir.NameAr</option>
+                    }
+                }
+            </select>
+        </div>
+
+        @* 5. الجلسة القضائية *@
+        <div>
+            <label>الجلسة القضائية:</label>
+            <select class="form-control" value="@selectedSessionVersionId" @onchange="OnSessionChanged" disabled="@(isLoadingSessions || sessionVersions == null || sessionVersions.Count == 0)">
+                @if (isLoadingSessions)
+                {
+                    <option value="0">جاري تحميل الجلسات المصرح بها...</option>
+                }
+                else if (sessionVersions == null || sessionVersions.Count == 0)
+                {
+                    <option value="0">-- لا توجد جلسات مطابقة --</option>
+                }
+                else
+                {
+                    @foreach (var sv in sessionVersions)
+                    {
+                        <option value="@sv.Id">
+                            @sv.ScheduleDescription@(sv.JurisdictionNamesAr is { Count: > 0 } ? $" ({string.Join("، ", sv.JurisdictionNamesAr)})" : "")
+                        </option>
+                    }
+                }
+            </select>
+        </div>
+    </div>
+
+    @* الشريط السفلي للبطاقة *@
+    <div class="setup-bottom">
+        <div class="d-flex align-center gap-3 flex-wrap">
+            <span class="d-flex align-center gap-2 text-secondary" style="font-size:0.9rem">
+                <span>🔒</span>
+                <span>العام القضائي: <strong>@(years?.FirstOrDefault(y => y.Id == selectedYearId)?.NameAr ?? "-")</strong></span>
+            </span>
+
+            @{
+                var selPeriod = periods?.FirstOrDefault(p => p.Id == selectedPeriodId);
+            }
+            @if (selPeriod != null)
+            {
+                <div class="d-flex align-center gap-2">
+                    <span class="badge @(isCurrentCourtPeriodOpen ? "badge-success" : "badge-danger")" style="font-size:0.8rem">
+                        @(isCurrentCourtPeriodOpen ? "🟢 إدخال الشهر مفتوح للمحكمة" : "🔴 إدخال الشهر مغلق للمحكمة")
+                    </span>
+                    @if (CourtState.CanManagePeriodStatus && selectedPeriodId > 0 && (selectedCourtId > 0 || CourtState.SelectedPrimaryCourtId.HasValue))
+                    {
+                        <button type="button" 
+                                class="btn btn-sm @(isCurrentCourtPeriodOpen ? "btn-outline-danger" : "btn-outline-success")"
+                                style="font-size:0.75rem;padding:2px 8px;"
+                                disabled="@isTogglingCourtPeriod"
+                                @onclick="ToggleCurrentCourtPeriodStatus"
+                                title="تبديل فتح/إغلاق إدخال هذا الشهر للمحكمة المحددة">
+                            @(isCurrentCourtPeriodOpen ? "إغلاق للمحكمة" : "فتح للمحكمة")
+                        </button>
+                    }
+                </div>
+            }
+
+            @if (selectedSessionVersionId > 0 && selectedPeriodId > 0)
+            {
+                <div class="d-flex align-center gap-2">
+                    <span class="text-secondary" style="font-size:0.85rem">حالة الجلسة:</span>
+                    @if (currentHeader != null)
+                    {
+                        @switch (currentHeader.Status)
+                        {
+                            case "Draft":
+                                <span class="badge badge-muted">مسودة قيد الإدخال</span>
+                                break;
+                            case "Submitted":
+                                <span class="badge badge-info">مقدمة للمراجعة</span>
+                                break;
+                            case "UnderReview":
+                                <span class="badge badge-warning">قيد المراجعة</span>
+                                break;
+                            case "Approved":
+                                <span class="badge badge-success">معتمدة نهائياً</span>
+                                break;
+                            case "Reopened":
+                                <span class="badge badge-danger">معاد فتحها</span>
+                                break;
+                            default:
+                                <span class="badge">@currentHeader.Status</span>
+                                break;
+                        }
+                    }
+                    else
+                    {
+                        <span class="badge badge-secondary" style="background:#e0e7ff;color:#3730a3">إحصائية جديدة لم تبدأ</span>
+                    }
+                </div>
+            }
+        </div>
+
+        <div>
+            @{
+                bool isClosedAndNew = !isCurrentCourtPeriodOpen && currentHeader == null;
+            }
+            <button class="btn btn-primary d-flex align-center gap-2"
+                    @onclick="HandleOpenSelectedStatistics"
+                    disabled="@(selectedSessionVersionId == 0 || selectedPeriodId == 0 || isSubmitting || isClosedAndNew)">
+                @if (isSubmitting)
+                {
+                    <div class="spinner" style="width:16px;height:16px;border-width:2px"></div>
+                    <span>جاري التحضير...</span>
+                }
+                else if (isClosedAndNew)
+                {
+                    <span>⛔ إدخال هذا الشهر مغلق للمحكمة</span>
+                }
+                else
+                {
+                    <span>@(currentHeader != null ? (currentHeader.Status == "Approved" || !isCurrentCourtPeriodOpen ? "عرض الإحصائية" : "فتح شاشة الإدخال") : "بدء إدخال إحصائية جديدة")</span>
+                    <span>←</span>
+                }
+            </button>
+        </div>
+    </div>
+</section>
+
+@* ==================== جدول سجل الإحصائيات الشهرية السابقة ==================== *@
+<div class="card">
+    <div class="card-header d-flex justify-between align-center">
+        <span class="card-title">📋 الإحصائيات المسجلة للعام القضائي</span>
+        <div class="d-flex align-center gap-2">
+            <label style="font-size:0.85rem;color:var(--text-secondary)">تصفية الحالة:</label>
+            <select class="form-control form-control-sm" style="width:160px" @onchange="OnTableStatusFilterChanged">
+                <option value="">-- كافة الحالات --</option>
+                <option value="Draft">مسودة</option>
+                <option value="Submitted">مقدمة للمراجعة</option>
+                <option value="UnderReview">قيد المراجعة</option>
+                <option value="Approved">معتمدة</option>
+                <option value="Reopened">معاد فتحها</option>
+            </select>
+        </div>
+    </div>
+    <div class="card-body" style="padding:0">
+        @if (tableHeaders is null)
+        {
+            <div style="padding:2rem" class="d-flex align-center gap-2"><div class="spinner"></div><span>جاري تحميل قائمة الإحصائيات...</span></div>
+        }
+        else if (tableHeaders.Count == 0)
+        {
+            <div style="padding:3rem;text-align:center;color:var(--text-muted)">
+                <div style="font-size:2.5rem;margin-bottom:.75rem">📂</div>
+                <div style="font-weight:600">لا توجد إحصائيات مسجلة مطابقة حتى الآن.</div>
+            </div>
+        }
+        else
+        {
+            <div class="table-wrapper" style="border:none">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>النوع</th>
+                            <th>الجلسة</th>
+                            <th>الدائرة</th>
+                            <th>الشهر</th>
+                            <th>الحالة</th>
+                            <th>تاريخ الإنشاء</th>
+                            <th>المعتمد</th>
+                            <th>الإجراء</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var h in tableHeaders)
+                        {
+                            <tr>
+                                <td>
+                                    <span class="badge" style="background:rgba(18,62,86,0.08);color:var(--brand-primary);font-size:0.75rem">
+                                        @StatisticalDisciplines.GetNameAr(h.DisciplineCode)
+                                    </span>
+                                </td>
+                                <td class="fw-bold">@h.SessionNameAr</td>
+                                <td>@h.CircuitNameAr</td>
+                                <td>@h.PeriodMonthNameAr</td>
+                                <td>
+                                    @switch (h.Status)
+                                    {
+                                        case "Draft":
+                                            <span class="badge badge-muted">مسودة</span>
+                                            break;
+                                        case "Submitted":
+                                            <span class="badge badge-info">مقدمة للمراجعة</span>
+                                            break;
+                                        case "UnderReview":
+                                            <span class="badge badge-warning">قيد المراجعة</span>
+                                            break;
+                                        case "Approved":
+                                            <span class="badge badge-success">معتمدة</span>
+                                            break;
+                                        case "Reopened":
+                                            <span class="badge badge-danger">معاد فتحها</span>
+                                            break;
+                                        default:
+                                            <span class="badge">@h.Status</span>
+                                            break;
+                                    }
+                                </td>
+                                <td>@h.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                                <td>@(h.ApprovedByNameAr ?? "-")</td>
+                                <td>
+                                    <a href="/statistics/entry/@h.Id" class="btn btn-sm btn-primary">
+                                        @(h.Status == "Approved" ? "عرض" : "فتح النموذج")
+                                    </a>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    private long currentUserId = 1;
+
+    // Lookups
+    private List<JudicialYearDto>? years;
+    private List<StatisticalPeriodDto>? periods;
+    private List<JudicialStatistics.Application.Courts.CourtUnitDto>? courts;
+    private List<CircuitDto>? circuits;
+    private List<SessionVersionDto>? sessionVersions;
+
+    // Setup state
+    private long selectedYearId;
+    private long selectedPeriodId;
+    private string selectedDiscipline = StatisticalDisciplines.Civil;
+    private long selectedCourtId;
+    private long selectedCircuitId;
+    private long selectedSessionVersionId;
+
+    // Loading states
+    private bool isLoadingCourts = false;
+    private bool isLoadingCircuits = false;
+    private bool isLoadingSessions = false;
+    private bool isSubmitting = false;
+
+    // Status & Error
+    private string? statusMessage;
+    private bool isError = false;
+
+    // Existing header for selected session + period
+    private StatisticsHeaderDto? currentHeader;
+
+    // Table headers overview
+    private List<StatisticsHeaderDto>? tableHeaders;
+    private string? tableStatusFilter;
+
+    protected override async Task OnInitializedAsync()
+    {
+        CourtState.OnChange += OnCourtStateChanged;
+        await ResolveCurrentUserIdAsync();
+        await OrgService.GetDisciplinesAsync();
+
+        years = await YearsService.GetYearsAsync();
+        if (years.Count > 0)
+        {
+            var active = years.FirstOrDefault(y => y.Status == "Active") ?? years.First();
+            selectedYearId = active.Id;
+            periods = await YearsService.GetPeriodsForYearAsync(selectedYearId);
+            if (periods.Count > 0)
+            {
+                selectedPeriodId = periods.First().Id;
+            }
+
+            await LoadCourtsCascadeAsync();
+            await LoadTableHeadersAsync();
+        }
+    }
+
+    private void OnCourtStateChanged()
+    {
+        InvokeAsync(async () =>
+        {
+            await LoadCourtsCascadeAsync();
+            await LoadTableHeadersAsync();
+            StateHasChanged();
+        });
+    }
+
+    private async Task ResolveCurrentUserIdAsync()
+    {
+        try
+        {
+            if (AuthState != null)
+            {
+                var auth = await AuthState;
+                var user = auth.User;
+                if (user.Identity?.IsAuthenticated == true)
+                {
+                    await CourtState.EnsureInitializedAsync(user);
+                    if (CourtState.CurrentAppUserId > 0)
+                    {
+                        currentUserId = CourtState.CurrentAppUserId;
+                        return;
+                    }
+
+                    var sub = user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+                    var email = user.Identity.Name;
+
+                    using var scope = ScopeFactory.CreateScope();
+                    var db = scope.ServiceProvider.GetRequiredService<JudicialStatistics.Infrastructure.Persistence.JudicialDbContext>();
+                    var appUser = await db.AppUsers.FirstOrDefaultAsync(u => u.IdentitySubject == sub || u.Email == email);
+                    if (appUser != null)
+                    {
+                        currentUserId = appUser.Id;
+                    }
+                }
+            }
+        }
+        catch
+        {
+            if (CourtState.CurrentAppUserId > 0)
+            {
+                currentUserId = CourtState.CurrentAppUserId;
+            }
+        }
+    }
+
+    private async Task OnDisciplineSelected(string disciplineCode)
+    {
+        if (selectedDiscipline == disciplineCode) return;
+        selectedDiscipline = disciplineCode;
+        await LoadCourtsCascadeAsync();
+    }
+
+    private async Task OnYearChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var yId))
+        {
+            selectedYearId = yId;
+            periods = await YearsService.GetPeriodsForYearAsync(yId);
+            selectedPeriodId = periods.FirstOrDefault()?.Id ?? 0;
+            await LoadCourtsCascadeAsync();
+            await LoadTableHeadersAsync();
+        }
+    }
+
+    private async Task OnPeriodChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var pId))
+        {
+            selectedPeriodId = pId;
+            await CheckSelectedStatisticsStatusAsync();
+        }
+    }
+
+    private async Task OnCourtChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var cId))
+        {
+            selectedCourtId = cId;
+            await LoadCircuitsCascadeAsync();
+        }
+    }
+
+    private async Task OnCircuitChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var cirId))
+        {
+            selectedCircuitId = cirId;
+            await LoadSessionsCascadeAsync();
+        }
+    }
+
+    private async Task OnSessionChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var svId))
+        {
+            selectedSessionVersionId = svId;
+            await CheckSelectedStatisticsStatusAsync();
+        }
+    }
+
+    private async Task LoadCourtsCascadeAsync()
+    {
+        isLoadingCourts = true;
+        selectedCourtId = 0;
+        selectedCircuitId = 0;
+        selectedSessionVersionId = 0;
+        currentHeader = null;
+
+        try
+        {
+            courts = await OrgService.GetAuthorizedCourtsForDisciplineAsync(selectedYearId, selectedDiscipline, currentUserId, CourtState.SelectedPrimaryCourtId);
+            if (courts.Count > 0)
+            {
+                selectedCourtId = courts[0].Id;
+                await LoadCircuitsCascadeAsync();
+            }
+            else
+            {
+                circuits = new();
+                sessionVersions = new();
+            }
+        }
+        finally
+        {
+            isLoadingCourts = false;
+        }
+    }
+
+    private async Task LoadCircuitsCascadeAsync()
+    {
+        isLoadingCircuits = true;
+        selectedCircuitId = 0;
+        selectedSessionVersionId = 0;
+        currentHeader = null;
+
+        try
+        {
+            if (selectedCourtId > 0)
+            {
+                circuits = await OrgService.GetAuthorizedCircuitsForDisciplineAsync(selectedYearId, selectedCourtId, selectedDiscipline, currentUserId);
+                if (circuits.Count > 0)
+                {
+                    selectedCircuitId = circuits[0].Id;
+                    await LoadSessionsCascadeAsync();
+                }
+                else
+                {
+                    sessionVersions = new();
+                }
+            }
+            else
+            {
+                circuits = new();
+                sessionVersions = new();
+            }
+        }
+        finally
+        {
+            isLoadingCircuits = false;
+        }
+    }
+
+    private async Task LoadSessionsCascadeAsync()
+    {
+        isLoadingSessions = true;
+        selectedSessionVersionId = 0;
+        currentHeader = null;
+
+        try
+        {
+            if (selectedCircuitId > 0)
+            {
+                sessionVersions = await OrgService.GetAuthorizedSessionVersionsForDisciplineAsync(selectedYearId, selectedCircuitId, selectedDiscipline, currentUserId);
+                if (sessionVersions.Count > 0)
+                {
+                    selectedSessionVersionId = sessionVersions[0].Id;
+                    await CheckSelectedStatisticsStatusAsync();
+                }
+            }
+            else
+            {
+                sessionVersions = new();
+            }
+        }
+        finally
+        {
+            isLoadingSessions = false;
+        }
+    }
+
+    private bool isCurrentCourtPeriodOpen = true;
+    private bool isTogglingCourtPeriod = false;
+
+    private async Task CheckSelectedStatisticsStatusAsync()
+    {
+        currentHeader = null;
+
+        long targetCourtId = selectedCourtId > 0 ? selectedCourtId : (CourtState.SelectedPrimaryCourtId ?? 0);
+        if (selectedPeriodId > 0 && targetCourtId > 0)
+        {
+            isCurrentCourtPeriodOpen = await YearsService.IsPeriodOpenForCourtAsync(selectedPeriodId, targetCourtId);
+        }
+        else if (selectedPeriodId > 0)
+        {
+            var p = periods?.FirstOrDefault(x => x.Id == selectedPeriodId);
+            isCurrentCourtPeriodOpen = p?.IsOpenForEntry ?? true;
+        }
+
+        if (selectedSessionVersionId > 0 && selectedPeriodId > 0)
+        {
+            var headers = await StatsService.GetHeadersAsync(selectedYearId, selectedPeriodId, selectedSessionVersionId, null);
+            currentHeader = headers.FirstOrDefault();
+        }
+    }
+
+    private async Task ToggleCurrentCourtPeriodStatus()
+    {
+        if (!CourtState.CanManagePeriodStatus || selectedPeriodId <= 0) return;
+        long targetCourtId = selectedCourtId > 0 ? selectedCourtId : (CourtState.SelectedPrimaryCourtId ?? 0);
+        if (targetCourtId <= 0) return;
+
+        try
+        {
+            isTogglingCourtPeriod = true;
+            await YearsService.SetCourtPeriodEntryStatusAsync(selectedPeriodId, targetCourtId, !isCurrentCourtPeriodOpen, CourtState.CurrentAppUserId);
+            isCurrentCourtPeriodOpen = !isCurrentCourtPeriodOpen;
+            statusMessage = isCurrentCourtPeriodOpen
+                ? "تم فتح إمكانية إدخال وتعديل الإحصائيات لهذه المحكمة بنجاح."
+                : "تم إغلاق إمكانية إدخال وتعديل الإحصائيات لهذه المحكمة.";
+            isError = false;
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "حدث خطأ: " + ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            isTogglingCourtPeriod = false;
+        }
+    }
+
+    private async Task HandleOpenSelectedStatistics()
+    {
+        if (selectedSessionVersionId == 0 || selectedPeriodId == 0) return;
+
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            var matrix = await StatsService.GetOrCreateMatrixAsync(selectedSessionVersionId, selectedPeriodId, currentUserId);
+            Navigation.NavigateTo($"/statistics/entry/{matrix.Header.Id}");
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.InnerException != null ? $"{ex.Message} ({ex.InnerException.Message})" : ex.Message;
+            isError = true;
+            isSubmitting = false;
+        }
+    }
+
+    private async Task LoadTableHeadersAsync()
+    {
+        tableHeaders = await StatsService.GetHeadersAsync(
+            selectedYearId,
+            null,
+            null,
+            tableStatusFilter,
+            currentUserId,
+            CourtState.SelectedPrimaryCourtId
+        );
+    }
+
+    private async Task OnPrimaryCourtFilterChanged(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var pcId))
+        {
+            CourtState.SelectPrimaryCourt(pcId);
+            await LoadCourtsCascadeAsync();
+        }
+    }
+
+    private async Task OnTableStatusFilterChanged(ChangeEventArgs e)
+    {
+        tableStatusFilter = e.Value?.ToString();
+        if (string.IsNullOrWhiteSpace(tableStatusFilter)) tableStatusFilter = null;
+        await LoadTableHeadersAsync();
+    }
+
+    public void Dispose()
+    {
+        CourtState.OnChange -= OnCourtStateChanged;
+    }
+}

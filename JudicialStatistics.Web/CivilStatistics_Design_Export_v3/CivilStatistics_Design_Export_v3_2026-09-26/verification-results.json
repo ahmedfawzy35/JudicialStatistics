@@ -1,0 +1,46 @@
+{
+  "checks": [
+    {
+      "name": "July incoming +3",
+      "passed": true
+    },
+    {
+      "name": "September source -3 once",
+      "passed": true
+    },
+    {
+      "name": "Source not mutated",
+      "passed": true
+    },
+    {
+      "name": "Valid data shape",
+      "passed": true
+    },
+    {
+      "name": "Arabic digits",
+      "passed": true
+    },
+    {
+      "name": "Overdraw rejected",
+      "passed": true
+    },
+    {
+      "name": "Preview returns RTL HTML",
+      "passed": true
+    },
+    {
+      "name": "Asset ./assets/index-hapI8Yxj.js",
+      "passed": true
+    },
+    {
+      "name": "Asset ./assets/index-Bzq8xBUW.css",
+      "passed": true
+    }
+  ],
+  "allPassed": true,
+  "julyIncomingBefore": 337,
+  "julyIncomingAfter": 340,
+  "september2023Before": 22,
+  "september2023After": 19,
+  "browserUIValidation": "Not performed: no Chromium executable in this environment."
+}

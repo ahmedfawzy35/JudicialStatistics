@@ -1,0 +1,764 @@
+@page "/statistics/import"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using System.IO
+@using JudicialStatistics.Application.Import
+@using JudicialStatistics.Application.Years
+@using JudicialStatistics.Domain.Import
+@using JudicialStatistics.Web.Services
+@inject IStatisticsImportService ImportService
+@inject IFormationExportService FormationExportService
+@inject IJudicialYearsService YearsService
+@inject CurrentCourtState CourtState
+@inject AuthenticationStateProvider AuthStateProvider
+@inject IJSRuntime JSRuntime
+@inject ILogger<StatisticsImport> Logger
+
+<PageTitle>استيراد الإحصائيات من Excel — نظام الإحصاء القضائي</PageTitle>
+
+<div class="cs-page-container" dir="rtl">
+    @* رأس الصفحة *@
+    <div class="d-flex justify-between align-center mb-4 flex-wrap gap-3">
+        <div>
+            <h1 class="cs-page-title mb-1">📥 استيراد الإحصائيات القضائية من Excel</h1>
+            <p class="cs-page-subtitle">استيراد المقدمات والإنتاج وأحكام القضاة وتوزيع المؤجلات وفق شيت التشكيل وبلوكات الإحصائية المرنة.</p>
+        </div>
+        <div class="d-flex align-center gap-2">
+            <button type="button" class="btn btn-outline-primary d-flex align-center gap-2" @onclick="ExportFormationTemplateAsync" disabled="@isExportingFormation">
+                @if (isExportingFormation)
+                {
+                    <span class="spinner-border spinner-border-sm" role="status"></span>
+                    <span>جاري التصدير...</span>
+                }
+                else
+                {
+                    <span>📄 تصدير شيت التشكيل المعتمد للإكسل</span>
+                }
+            </button>
+        </div>
+    </div>
+
+    @* شريط التنبيهات *@
+    @if (!string.IsNullOrEmpty(statusMessage))
+    {
+        <div class="alert @(isStatusError ? "alert-danger" : "alert-success") alert-dismissible mb-4 d-flex justify-between align-center">
+            <div>@statusMessage</div>
+            <button type="button" class="btn-close" @onclick="() => statusMessage = null">✕</button>
+        </div>
+    }
+
+    @* بطاقة إعدادات الاستيراد ورفع الملف *@
+    <div class="card mb-4 shadow-sm border-0">
+        <div class="card-body p-4">
+            <h5 class="card-title fw-bold mb-3 text-primary d-flex align-center gap-2">
+                <span>⚙️</span> إعدادات الاستيراد وتحديد القالب
+            </h5>
+
+            <div class="row g-3">
+                @* العام القضائي *@
+                <div class="col-md-3">
+                    <label class="form-label fw-bold">العام القضائي:</label>
+                    <select class="form-select" @bind="selectedYearId" @bind:after="OnYearChangedAsync">
+                        @foreach (var y in judicialYears)
+                        {
+                            <option value="@y.Id">@y.NameAr</option>
+                        }
+                    </select>
+                </div>
+
+                @* الفترة الإحصائية / الشهر *@
+                <div class="col-md-3">
+                    <label class="form-label fw-bold">الشهر الإحصائي المستهدف:</label>
+                    <select class="form-select" @bind="selectedPeriodId">
+                        @foreach (var p in availablePeriods)
+                        {
+                            <option value="@p.Id">@p.MonthNameAr @p.YearNameAr</option>
+                        }
+                    </select>
+                </div>
+
+                @* قالب الاستيراد *@
+                <div class="col-md-4">
+                    <label class="form-label fw-bold">قالب الاستيراد المعتمد:</label>
+                    <div class="input-group">
+                        <select class="form-select" @bind="selectedTemplateId" @bind:after="OnTemplateChanged">
+                            @foreach (var t in templates)
+                            {
+                                <option value="@t.Id">@t.NameAr (@t.StatisticsSheetName)</option>
+                            }
+                        </select>
+                        <button class="btn btn-outline-secondary" type="button" title="تخصيص القالب" @onclick="OpenTemplateModal">
+                            ⚙️ تخصيص
+                        </button>
+                    </div>
+                </div>
+
+                @* زر إضافة قالب جديد *@
+                <div class="col-md-2 d-flex align-items-end">
+                    <button class="btn btn-outline-success w-100" @onclick="AddNewTemplate">
+                        ➕ قالب جديد
+                    </button>
+                </div>
+
+                @* حقل رفع ملف الإكسل *@
+                <div class="col-12 mt-3">
+                    <label class="form-label fw-bold">ملف الإكسل المطلوب استيراده (.xlsx, .xlsm):</label>
+                    <div class="p-3 border rounded-3 bg-light d-flex align-center justify-between flex-wrap gap-3">
+                        <div class="d-flex align-center gap-3">
+                            <span style="font-size: 2rem;">📊</span>
+                            <div>
+                                <InputFile OnChange="OnInputFileChange" class="form-control" accept=".xlsx,.xlsm" />
+                                <small class="text-muted">يدعم ملفات الإكسل الرسمية للعام القضائي (حجم أقصى 50 ميجابايت).</small>
+                            </div>
+                        </div>
+
+                        <div class="d-flex align-center gap-2">
+                            <button type="button" class="btn btn-primary px-4 py-2 fw-bold d-flex align-center gap-2" 
+                                    @onclick="RunPreviewAsync" disabled="@(uploadedFile == null || isProcessing)">
+                                @if (isProcessing)
+                                {
+                                    <span class="spinner-border spinner-border-sm" role="status"></span>
+                                    <span>جاري فحص الملف...</span>
+                                }
+                                else
+                                {
+                                    <span>🔍 فحص ومعاينة البيانات (Preview)</span>
+                                }
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @* شاشة نتائج المعاينة والتدقيق الذكي *@
+    @if (previewResult != null)
+    {
+        <div class="card mb-4 shadow-sm border-0 border-top border-4 border-success">
+            <div class="card-body p-4">
+                <div class="d-flex justify-between align-center mb-3 flex-wrap gap-2">
+                    <div>
+                        <h4 class="fw-bold mb-1 text-success d-flex align-center gap-2">
+                            <span>✅</span> نتائج تدقيق ومعاينة ملف الإكسل
+                        </h4>
+                        <div class="text-muted">
+                            القالب: <strong>@previewResult.TemplateName</strong> | الفترة: <strong>@previewResult.PeriodName</strong>
+                        </div>
+                    </div>
+                    <div class="d-flex align-center gap-2">
+                        <button type="button" class="btn btn-success px-4 py-2 fw-bold d-flex align-center gap-2" 
+                                @onclick="CommitImportAsync" disabled="@isCommitting">
+                            @if (isCommitting)
+                            {
+                                <span class="spinner-border spinner-border-sm" role="status"></span>
+                                <span>جاري الحفظ في النظام...</span>
+                            }
+                            else
+                            {
+                                <span>💾 اعتماد وحفظ الإحصائيات في النظام (@previewResult.MatchedSessionsCount جلسة)</span>
+                            }
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary" @onclick="() => previewResult = null">
+                            إلغاء المعاينة
+                        </button>
+                    </div>
+                </div>
+
+                @* كروت الإحصائيات السريعة للملف *@
+                <div class="row g-3 mb-4">
+                    <div class="col-md-3">
+                        <div class="p-3 border rounded text-center bg-light">
+                            <div class="text-muted small">إجمالي الجلسات بالملف</div>
+                            <div class="fs-4 fw-bold text-dark">@previewResult.TotalSessionsFound</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="p-3 border rounded text-center bg-light">
+                            <div class="text-muted small">مطابقة تماماً بالنظام</div>
+                            <div class="fs-4 fw-bold text-success">@previewResult.MatchedSessionsCount ✅</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="p-3 border rounded text-center bg-light">
+                            <div class="text-muted small">غير مطابقة / مفقودة</div>
+                            <div class="fs-4 fw-bold @(previewResult.UnmatchedSessionsCount > 0 ? "text-danger" : "text-muted")">
+                                @previewResult.UnmatchedSessionsCount @(previewResult.UnmatchedSessionsCount > 0 ? "⚠️" : "")
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="p-3 border rounded text-center bg-light">
+                            <div class="text-muted small">جلسات متزنة حسابياً</div>
+                            <div class="fs-4 fw-bold text-primary">@previewResult.BalancedSessionsCount / @previewResult.MatchedSessionsCount</div>
+                        </div>
+                    </div>
+                </div>
+
+                @* جدول الجلسات المستوردة التفصيلي *@
+                <div class="table-responsive" style="max-height: 550px; overflow-y: auto;">
+                    <table class="table table-bordered table-hover align-middle text-center mb-0" style="font-size: 0.9rem;">
+                        <thead class="table-dark sticky-top">
+                            <tr>
+                                <th style="width: 50px;">#</th>
+                                <th>الجلسة بالإكسل</th>
+                                <th>الدائرة</th>
+                                <th style="width: 80px;">الصف</th>
+                                <th>الجلسة المقابلة بالنظام</th>
+                                <th>مطابقة القضاة المكتشفين</th>
+                                <th>المقدم</th>
+                                <th>المحكوم فيه</th>
+                                <th>المؤجل</th>
+                                <th>حالة التوازن</th>
+                                <th>الملاحظات</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @if (previewResult.Sessions.Count == 0)
+                            {
+                                <tr>
+                                    <td colspan="11" class="text-center py-4 text-muted">لم يتم العثور على أي جلسات في النطاق المحدد.</td>
+                                </tr>
+                            }
+                            else
+                            {
+                                @for (int i = 0; i < previewResult.Sessions.Count; i++)
+                                {
+                                    var s = previewResult.Sessions[i];
+                                    <tr class="@(s.MatchStatus == "NotFound" ? "table-danger" : (s.IsBalanced ? "" : "table-warning"))">
+                                        <td>@(i + 1)</td>
+                                        <td class="fw-bold text-end">@s.ExcelSessionName</td>
+                                        <td>@s.ExcelCircuitName</td>
+                                        <td><code>@s.BlockStartRow</code></td>
+                                        <td>
+                                            @if (s.MatchStatus == "NotFound")
+                                            {
+                                                <span class="badge bg-danger">غير موجودة بالنظام ⚠️</span>
+                                            }
+                                            else
+                                            {
+                                                <div class="fw-bold text-success">@s.MatchedSessionName</div>
+                                                <small class="text-muted">(@s.MatchedSessionCode)</small>
+                                            }
+                                        </td>
+                                        <td class="text-start">
+                                            @if (s.JudgesMatches.Count == 0)
+                                            {
+                                                <span class="text-muted small">-</span>
+                                            }
+                                            else
+                                            {
+                                                @foreach (var jm in s.JudgesMatches)
+                                                {
+                                                    <div class="small mb-1">
+                                                        @if (jm.IsMatched)
+                                                        {
+                                                            <span class="badge bg-success me-1">ق@jm.ExcelJudgeNo</span>
+                                                            <span>@jm.MatchedJudgeName</span>
+                                                        }
+                                                        else
+                                                        {
+                                                            <span class="badge bg-warning text-dark me-1">ق@jm.ExcelJudgeNo</span>
+                                                            <span class="text-danger">@(string.IsNullOrEmpty(jm.ExcelJudgeName) ? "غير محدد" : jm.ExcelJudgeName)</span>
+                                                        }
+                                                    </div>
+                                                }
+                                            }
+                                        </td>
+                                        <td class="fw-bold">@s.TotalIncoming.ToString("N0")</td>
+                                        <td class="fw-bold text-primary">@s.TotalFinalJudgments.ToString("N0")</td>
+                                        <td class="fw-bold text-secondary">@s.TotalPostponed.ToString("N0")</td>
+                                        <td>
+                                            @if (s.IsBalanced)
+                                            {
+                                                <span class="badge bg-success">متزنة ✅</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="badge bg-danger" title="الفارق: @s.BalanceDifference">
+                                                    فرق (@s.BalanceDifference)
+                                                </span>
+                                            }
+                                        </td>
+                                        <td class="text-start small">
+                                            @if (s.ValidationMessages.Count > 0)
+                                            {
+                                                @foreach (var msg in s.ValidationMessages)
+                                                {
+                                                    <div class="text-danger">@msg</div>
+                                                }
+                                            }
+                                            else
+                                            {
+                                                <span class="text-success">سليمة وجاهزة</span>
+                                            }
+                                        </td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* نافذة منبثقة لتخصيص وتعديل القالب *@
+    @if (showTemplateModal && editingTemplate != null)
+    {
+        <div class="modal fade show d-block" tabindex="-1" style="background: rgba(0,0,0,0.5);">
+            <div class="modal-dialog modal-xl modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header bg-primary text-white">
+                        <h5 class="modal-title fw-bold">⚙️ ضبط وتخصيص قالب الاستيراد (@editingTemplate.NameAr)</h5>
+                        <button type="button" class="btn-close btn-close-white" @onclick="() => showTemplateModal = false"></button>
+                    </div>
+                    <div class="modal-body p-4">
+                        @* بيانات القالب الأساسية *@
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold">اسم القالب:</label>
+                                <input type="text" class="form-control" @bind="editingTemplate.NameAr" />
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold">اسم ورقة الإحصائية (Sheet):</label>
+                                <input type="text" class="form-control" @bind="editingTemplate.StatisticsSheetName" />
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold">اسم ورقة التشكيل (Sheet):</label>
+                                <input type="text" class="form-control" @bind="editingTemplate.TashkeelSheetName" />
+                            </div>
+                        </div>
+
+                        <h6 class="fw-bold text-primary border-bottom pb-2">📍 إحداثيات ورقة التشكيل:</h6>
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-2">
+                                <label class="form-label small">بداية صف الجلسات:</label>
+                                <input type="number" class="form-control" @bind="editingTemplate.TashkeelSessionStartRow" />
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">عمود رقم الجلسة:</label>
+                                <input type="text" class="form-control" @bind="editingTemplate.TashkeelSessionNoCol" />
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">عمود اسم الجلسة:</label>
+                                <input type="text" class="form-control" @bind="editingTemplate.TashkeelSessionNameCol" />
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">عمود بداية الرنج:</label>
+                                <input type="text" class="form-control" @bind="editingTemplate.TashkeelSessionStartBlockCol" />
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">عمود رقم القاضي:</label>
+                                <input type="text" class="form-control" @bind="editingTemplate.TashkeelJudgeNoCol" />
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">عمود اسم القاضي:</label>
+                                <input type="text" class="form-control" @bind="editingTemplate.TashkeelJudgeNameCol" />
+                            </div>
+                        </div>
+
+                        <h6 class="fw-bold text-primary border-bottom pb-2">📐 تركيبة بلوك الجلسة في ورقة الإحصائية:</h6>
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-2">
+                                <label class="form-label small">إجمالي صفوف البلوك:</label>
+                                <input type="number" class="form-control" @bind="editingTemplate.BlockTotalRows" />
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">عدد صفوف الشرائح:</label>
+                                <input type="number" class="form-control" @bind="editingTemplate.YearBandsCount" />
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">أوفست صفوف البيانات:</label>
+                                <input type="number" class="form-control" @bind="editingTemplate.PrimaryDataRowOffset" />
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">أوفست القضاة 3 و4:</label>
+                                <input type="number" class="form-control" @bind="editingTemplate.SecondaryJudgesRowOffset" />
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">خلية القاضي 1:</label>
+                                <input type="text" class="form-control" @bind="editingTemplate.Judge1HeaderCol" />
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">خلية القاضي 2:</label>
+                                <input type="text" class="form-control" @bind="editingTemplate.Judge2HeaderCol" />
+                            </div>
+                        </div>
+
+                        <div class="d-flex justify-between align-center border-bottom pb-2 mb-3">
+                            <h6 class="fw-bold text-primary mb-0">📑 خريطة الأعمدة المستوردة (@editingTemplate.ColumnMappings.Count عمود):</h6>
+                            <button type="button" class="btn btn-sm btn-outline-primary" @onclick="AddColumnMappingRow">
+                                ➕ إضافة عمود جديد
+                            </button>
+                        </div>
+
+                        <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                            <table class="table table-bordered table-sm text-center align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th style="width: 120px;">القسم</th>
+                                        <th style="width: 80px;">العمود</th>
+                                        <th>كود البند بالنظام</th>
+                                        <th>الاسم المعروض</th>
+                                        <th style="width: 80px;">موقع القاضي</th>
+                                        <th style="width: 60px;">إجراء</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var col in editingTemplate.ColumnMappings.OrderBy(c => c.DisplayOrder))
+                                    {
+                                        <tr>
+                                            <td>
+                                                <select class="form-select form-select-sm" @bind="col.Section">
+                                                    <option value="Incoming">المقدم</option>
+                                                    <option value="Production">الإنتاج</option>
+                                                    <option value="JudgeJudgment">أحكام القضاة</option>
+                                                    <option value="Postponement">المؤجلات</option>
+                                                </select>
+                                            </td>
+                                            <td>
+                                                <input type="text" class="form-control form-control-sm text-center fw-bold text-uppercase" @bind="col.ColumnLetter" />
+                                            </td>
+                                            <td>
+                                                <input type="text" class="form-control form-control-sm" @bind="col.TargetItemCode" />
+                                            </td>
+                                            <td>
+                                                <input type="text" class="form-control form-control-sm" @bind="col.TargetItemNameAr" />
+                                            </td>
+                                            <td>
+                                                @if (col.Section == "JudgeJudgment")
+                                                {
+                                                    <input type="number" class="form-control form-control-sm text-center" @bind="col.JudgeSlotIndex" min="1" max="3" />
+                                                }
+                                                else
+                                                {
+                                                    <span>-</span>
+                                                }
+                                            </td>
+                                            <td>
+                                                <button type="button" class="btn btn-sm btn-outline-danger py-0 px-2" @onclick="() => editingTemplate.ColumnMappings.Remove(col)">✕</button>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" @onclick="() => showTemplateModal = false">إلغاء</button>
+                        <button type="button" class="btn btn-success fw-bold px-4" @onclick="SaveTemplateAsync" disabled="@isSavingTemplate">
+                            @if (isSavingTemplate)
+                            {
+                                <span class="spinner-border spinner-border-sm" role="status"></span>
+                                <span>جاري الحفظ...</span>
+                            }
+                            else
+                            {
+                                <span>💾 حفظ القالب</span>
+                            }
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private List<JudicialYearDto> judicialYears = [];
+    private List<StatisticalPeriodDto> availablePeriods = [];
+    private List<ExcelImportTemplateDto> templates = [];
+
+    private long selectedYearId;
+    private long selectedPeriodId;
+    private long selectedTemplateId;
+
+    private IBrowserFile? uploadedFile;
+    private ImportPreviewResultDto? previewResult;
+
+    private bool isProcessing = false;
+    private bool isCommitting = false;
+    private bool isSavingTemplate = false;
+    private bool isExportingFormation = false;
+
+    private string? statusMessage;
+    private bool isStatusError = false;
+
+    private bool showTemplateModal = false;
+    private ExcelImportTemplateDto? editingTemplate;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadYearsAndTemplatesAsync();
+    }
+
+    private async Task LoadYearsAndTemplatesAsync()
+    {
+        try
+        {
+            judicialYears = await YearsService.GetYearsAsync();
+            var activeYear = judicialYears.FirstOrDefault(y => y.Status == "Active") ?? judicialYears.FirstOrDefault();
+            if (activeYear != null)
+            {
+                selectedYearId = activeYear.Id;
+                await OnYearChangedAsync();
+            }
+
+            templates = await ImportService.GetTemplatesAsync();
+            if (templates.Count > 0)
+            {
+                selectedTemplateId = templates.FirstOrDefault(t => t.IsDefault)?.Id ?? templates[0].Id;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "فشل تحميل البيانات الأولية لشاشة الاستيراد.");
+            ShowStatus($"فشل تحميل البيانات: {ex.Message}", true);
+        }
+    }
+
+    private async Task OnYearChangedAsync()
+    {
+        if (selectedYearId <= 0) return;
+        availablePeriods = await YearsService.GetPeriodsForYearAsync(selectedYearId);
+        if (availablePeriods.Count > 0)
+        {
+            selectedPeriodId = availablePeriods.FirstOrDefault(p => p.IsOpenForEntry)?.Id ?? availablePeriods[0].Id;
+        }
+    }
+
+    private void OnTemplateChanged()
+    {
+        previewResult = null;
+    }
+
+    private void OnInputFileChange(InputFileChangeEventArgs e)
+    {
+        uploadedFile = e.File;
+        previewResult = null;
+        statusMessage = null;
+    }
+
+    private async Task RunPreviewAsync()
+    {
+        if (uploadedFile == null || selectedTemplateId <= 0 || selectedPeriodId <= 0)
+        {
+            ShowStatus("يرجى اختيار ملف الإكسل والقالب والفترة الإحصائية أولاً.", true);
+            return;
+        }
+
+        isProcessing = true;
+        statusMessage = null;
+
+        try
+        {
+            using var stream = uploadedFile.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024);
+            using var memoryStream = new MemoryStream();
+            await stream.CopyToAsync(memoryStream);
+            memoryStream.Position = 0;
+
+            previewResult = await ImportService.PreviewImportAsync(memoryStream, selectedTemplateId, selectedYearId, selectedPeriodId);
+
+            if (previewResult.Errors.Count > 0)
+            {
+                ShowStatus(string.Join(" | ", previewResult.Errors), true);
+            }
+            else
+            {
+                ShowStatus($"اكتمل فحص الملف: تم العثور على {previewResult.TotalSessionsFound} جلسة ({previewResult.MatchedSessionsCount} مطابقة).", false);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "فشل فحص ومعاينة ملف الإكسل.");
+            ShowStatus($"فشل قراءة الملف: {ex.Message}", true);
+        }
+        finally
+        {
+            isProcessing = false;
+        }
+    }
+
+    private async Task CommitImportAsync()
+    {
+        if (previewResult == null) return;
+
+        isCommitting = true;
+        try
+        {
+            long currentUserId = CourtState.CurrentAppUserId > 0 ? CourtState.CurrentAppUserId : 1;
+            var res = await ImportService.CommitImportAsync(previewResult, currentUserId);
+
+            if (res.Success)
+            {
+                ShowStatus(res.Message, false);
+                previewResult = null;
+                uploadedFile = null;
+            }
+            else
+            {
+                ShowStatus(res.Message, true);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "فشل اعتماد الاستيراد.");
+            ShowStatus($"فشل الحفظ: {ex.Message}", true);
+        }
+        finally
+        {
+            isCommitting = false;
+        }
+    }
+
+    private async Task ExportFormationTemplateAsync()
+    {
+        if (selectedYearId <= 0) return;
+
+        isExportingFormation = true;
+        try
+        {
+            var period = availablePeriods.FirstOrDefault(p => p.Id == selectedPeriodId);
+            var bytes = await FormationExportService.ExportFormationWorkbookAsync(selectedYearId, selectedPeriodId > 0 ? selectedPeriodId : null);
+            var base64 = Convert.ToBase64String(bytes);
+            string periodPart = period != null ? $"_{period.MonthNameAr}" : "";
+            string fileName = $"التشكيل_القضائي_المعتمد{periodPart}_{DateTime.Now:yyyyMMdd}.xlsx";
+
+            await JSRuntime.InvokeVoidAsync("downloadFileFromBase64", fileName, base64, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            ShowStatus($"تم تصدير ملف شيت التشكيل بنجاح {(period != null ? $"لشهر {period.MonthNameAr}" : "")} مع مطابقة الأرقام التعريفية (IDs) وقرارات التكليف.", false);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "فشل تصدير شيت التشكيل.");
+            ShowStatus($"فشل تصدير التشكيل: {ex.Message}", true);
+        }
+        finally
+        {
+            isExportingFormation = false;
+        }
+    }
+
+    private void OpenTemplateModal()
+    {
+        var current = templates.FirstOrDefault(t => t.Id == selectedTemplateId);
+        if (current != null)
+        {
+            editingTemplate = CloneTemplate(current);
+            showTemplateModal = true;
+        }
+    }
+
+    private void AddNewTemplate()
+    {
+        editingTemplate = new ExcelImportTemplateDto
+        {
+            NameAr = "قالب مخصص جديد",
+            DisciplineKind = "CivilFull",
+            StatisticsSheetName = "مدني كلي",
+            TashkeelSheetName = "التشكيل",
+            IsDefault = false
+        };
+        showTemplateModal = true;
+    }
+
+    private void AddColumnMappingRow()
+    {
+        if (editingTemplate == null) return;
+        editingTemplate.ColumnMappings.Add(new ExcelImportColumnMappingDto
+        {
+            Section = "Incoming",
+            ColumnLetter = "A",
+            TargetItemCode = "NEW",
+            TargetItemNameAr = "بند جديد",
+            DisplayOrder = editingTemplate.ColumnMappings.Count + 1
+        });
+    }
+
+    private async Task SaveTemplateAsync()
+    {
+        if (editingTemplate == null) return;
+
+        isSavingTemplate = true;
+        try
+        {
+            var saved = await ImportService.SaveTemplateAsync(editingTemplate);
+            templates = await ImportService.GetTemplatesAsync();
+            selectedTemplateId = saved.Id;
+            showTemplateModal = false;
+            ShowStatus("تم حفظ إعدادات القالب بنجاح.", false);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "فشل حفظ القالب.");
+            ShowStatus($"فشل حفظ القالب: {ex.Message}", true);
+        }
+        finally
+        {
+            isSavingTemplate = false;
+        }
+    }
+
+    private void ShowStatus(string msg, bool isError)
+    {
+        statusMessage = msg;
+        isStatusError = isError;
+    }
+
+    private static ExcelImportTemplateDto CloneTemplate(ExcelImportTemplateDto src)
+    {
+        return new ExcelImportTemplateDto
+        {
+            Id = src.Id,
+            NameAr = src.NameAr,
+            DisciplineKind = src.DisciplineKind,
+            StatisticsSheetName = src.StatisticsSheetName,
+            TashkeelSheetName = src.TashkeelSheetName,
+            IsDefault = src.IsDefault,
+
+            TashkeelCircuitStartRow = src.TashkeelCircuitStartRow,
+            TashkeelCircuitNoCol = src.TashkeelCircuitNoCol,
+            TashkeelCircuitNameCol = src.TashkeelCircuitNameCol,
+
+            TashkeelSessionStartRow = src.TashkeelSessionStartRow,
+            TashkeelSessionCircuitNoCol = src.TashkeelSessionCircuitNoCol,
+            TashkeelSessionNoCol = src.TashkeelSessionNoCol,
+            TashkeelSessionNameCol = src.TashkeelSessionNameCol,
+            TashkeelSessionTypeCol = src.TashkeelSessionTypeCol,
+            TashkeelSessionDayCol = src.TashkeelSessionDayCol,
+            TashkeelSessionStartBlockCol = src.TashkeelSessionStartBlockCol,
+            TashkeelSessionCourtCol = src.TashkeelSessionCourtCol,
+
+            TashkeelJudgeStartRow = src.TashkeelJudgeStartRow,
+            TashkeelJudgeNoCol = src.TashkeelJudgeNoCol,
+            TashkeelJudgeNameCol = src.TashkeelJudgeNameCol,
+            TashkeelJudgeCircuitNoCol = src.TashkeelJudgeCircuitNoCol,
+            TashkeelJudgeRoleCol = src.TashkeelJudgeRoleCol,
+            TashkeelJudgeStatusCol = src.TashkeelJudgeStatusCol,
+
+            BlockTotalRows = src.BlockTotalRows,
+            YearBandsCount = src.YearBandsCount,
+            PrimaryDataRowOffset = src.PrimaryDataRowOffset,
+            SecondaryJudgesRowOffset = src.SecondaryJudgesRowOffset,
+            Judge1HeaderRowOffset = src.Judge1HeaderRowOffset,
+            Judge3HeaderRowOffset = src.Judge3HeaderRowOffset,
+            Judge1HeaderCol = src.Judge1HeaderCol,
+            Judge2HeaderCol = src.Judge2HeaderCol,
+            Judge5HeaderCol = src.Judge5HeaderCol,
+
+            ColumnMappings = src.ColumnMappings.Select(m => new ExcelImportColumnMappingDto
+            {
+                Id = m.Id,
+                ExcelImportTemplateId = m.ExcelImportTemplateId,
+                Section = m.Section,
+                ColumnLetter = m.ColumnLetter,
+                TargetItemCode = m.TargetItemCode,
+                TargetItemNameAr = m.TargetItemNameAr,
+                JudgeSlotIndex = m.JudgeSlotIndex,
+                TargetMonthOffset = m.TargetMonthOffset,
+                DisplayOrder = m.DisplayOrder
+            }).ToList()
+        };
+    }
+}

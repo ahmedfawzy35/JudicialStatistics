@@ -1,0 +1,119 @@
+@page "/audit"
+@rendermode InteractiveServer
+@inject IDbContextFactory<JudicialStatistics.Infrastructure.Persistence.JudicialDbContext> DbFactory
+
+<PageTitle>سجل المراجعة والتدقيق — الإحصاء القضائي</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📜 سجل المراجعة والتدقيق (System Audit Log)</h1>
+        <p class="page-subtitle">سجل تتبع غير قابل للتعديل (Append-Only) لحركات إنشاء ومراجعة واعتماد وإعادة فتح الإحصائيات</p>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">آخر العمليات والحركات المسجلة</span>
+    </div>
+    <div class="card-body" style="padding:0">
+        @if (entries is null)
+        {
+            <div style="padding:1.5rem" class="d-flex align-center gap-2"><div class="spinner"></div><span>جاري التحميل...</span></div>
+        }
+        else if (entries.Count == 0)
+        {
+            <div style="padding:2.5rem;text-align:center;color:var(--text-muted)">
+                لا توجد حركات مسجلة في سجل التدقيق حتى الآن.
+            </div>
+        }
+        else
+        {
+            <div class="table-wrapper" style="border:none">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>التاريخ والوقت</th>
+                            <th>المستخدم</th>
+                            <th>نوع الحركة</th>
+                            <th>الجلسة / الإحصائية</th>
+                            <th>الملاحظات والتفاصيل</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var e in entries)
+                        {
+                            <tr>
+                                <td style="white-space:nowrap;font-size:.85rem">
+                                    @e.OccurredAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+                                </td>
+                                <td class="fw-semibold">@e.UserName</td>
+                                <td>
+                                    <span class="badge @GetBadgeForAction(e.Action)">
+                                        @e.Action
+                                    </span>
+                                </td>
+                                <td>
+                                    <a href="/statistics/entry/@e.HeaderId" class="fw-bold" style="color:var(--brand-primary);text-decoration:none">
+                                        @e.SessionName (@e.PeriodName)
+                                    </a>
+                                </td>
+                                <td style="font-size:.85rem;color:var(--text-secondary)">
+                                    @(e.Comment ?? "-")
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private List<AuditRowDto>? entries;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var context = await DbFactory.CreateDbContextAsync();
+        entries = await context.AuditEntries
+            .Include(a => a.User)
+            .Include(a => a.StatisticsHeader)
+                .ThenInclude(h => h.SessionVersion)
+                    .ThenInclude(sv => sv.Session)
+            .Include(a => a.StatisticsHeader)
+                .ThenInclude(h => h.StatisticalPeriod)
+            .OrderByDescending(a => a.OccurredAt)
+            .Take(100)
+            .Select(a => new AuditRowDto(
+                a.Id,
+                a.OccurredAt,
+                a.User != null ? a.User.FullNameAr : "مستخدم النظام",
+                a.Action,
+                a.StatisticsHeaderId,
+                a.StatisticsHeader.SessionVersion.Session.NameAr,
+                a.StatisticsHeader.StatisticalPeriod.MonthStartDate.ToString("MMMM yyyy", new System.Globalization.CultureInfo("ar-EG")),
+                a.Comment
+            ))
+            .ToListAsync();
+    }
+
+    private static string GetBadgeForAction(string action) => action switch
+    {
+        var a when a.Contains("اعتماد") => "badge-success",
+        var a when a.Contains("إعادة فتح") => "badge-danger",
+        var a when a.Contains("إرجاع") => "badge-warning",
+        var a when a.Contains("تقديم") => "badge-info",
+        _ => "badge-secondary"
+    };
+
+    public record AuditRowDto(
+        long Id,
+        DateTime OccurredAt,
+        string UserName,
+        string Action,
+        long HeaderId,
+        string SessionName,
+        string PeriodName,
+        string? Comment
+    );
+}

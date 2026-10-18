@@ -1,0 +1,273 @@
+@page "/Account/Register"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.EntityFrameworkCore
+@using JudicialStatistics.Domain.Identity
+@using JudicialStatistics.Web.Data
+
+@inject UserManager<ApplicationUser> UserManager
+@inject IUserStore<ApplicationUser> UserStore
+@inject ILogger<Register> Logger
+@inject NavigationManager NavigationManager
+@inject ApplicationDbContext DbContext
+@inject AuthenticationStateProvider AuthStateProvider
+
+<PageTitle>إنشاء مستخدم جديد — الإحصاء القضائي</PageTitle>
+
+@if (!isAuthorized)
+{
+    <div class="alert alert-danger">غير مصرح بالوصول لهذه الصفحة.</div>
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">👤 إنشاء مستخدم جديد</h1>
+            <p class="page-subtitle">إضافة حساب مستخدم جديد وربطه بمحكمة ودور</p>
+        </div>
+        <a href="/users" class="btn btn-outline-secondary">← العودة للمستخدمين</a>
+    </div>
+
+    @if (!string.IsNullOrEmpty(statusMessage))
+    {
+        <div class="alert @(isError ? "alert-danger" : "alert-success") mb-4">
+            @(isError ? "⚠️" : "✅") @statusMessage
+        </div>
+    }
+
+    <div class="card" style="max-width:640px">
+        <div class="card-header"><span class="card-title">بيانات المستخدم الجديد</span></div>
+        <div class="card-body">
+            <EditForm Model="model" OnValidSubmit="HandleRegister">
+                <DataAnnotationsValidator />
+                <ValidationSummary class="alert alert-danger mb-3" />
+
+                <div class="form-group mb-3">
+                    <label class="form-label">الاسم الكامل بالعربية <span class="required">*</span></label>
+                    <InputText class="form-control" @bind-Value="model.FullNameAr" placeholder="مثال: أحمد محمد علي" />
+                    <ValidationMessage For="() => model.FullNameAr" />
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">البريد الإلكتروني <span class="required">*</span></label>
+                    <InputText class="form-control" @bind-Value="model.Email" type="email" placeholder="user@court.gov.eg" />
+                    <ValidationMessage For="() => model.Email" />
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">كلمة المرور <span class="required">*</span></label>
+                    <InputText class="form-control" @bind-Value="model.Password" type="password" />
+                    <ValidationMessage For="() => model.Password" />
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">تأكيد كلمة المرور <span class="required">*</span></label>
+                    <InputText class="form-control" @bind-Value="model.ConfirmPassword" type="password" />
+                    <ValidationMessage For="() => model.ConfirmPassword" />
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">المحكمة الابتدائية <span class="required">*</span></label>
+                    <InputSelect class="form-control" @bind-Value="model.CourtUnitId">
+                        <option value="0">-- اختر المحكمة --</option>
+                        @foreach (var c in availableCourts)
+                        {
+                            <option value="@c.Id">@c.NameAr</option>
+                        }
+                    </InputSelect>
+                    <ValidationMessage For="() => model.CourtUnitId" />
+                </div>
+
+                <div class="form-group mb-4">
+                    <label class="form-label">الدور <span class="required">*</span></label>
+                    <InputSelect class="form-control" @bind-Value="model.RoleId">
+                        <option value="0">-- اختر الدور --</option>
+                        @foreach (var r in availableRoles)
+                        {
+                            <option value="@r.Id">@r.NameAr</option>
+                        }
+                    </InputSelect>
+                    <ValidationMessage For="() => model.RoleId" />
+                </div>
+
+                <div class="d-flex gap-2">
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">
+                        @if (isSubmitting) { <span>جاري الإنشاء...</span> } else { <span>✅ إنشاء المستخدم</span> }
+                    </button>
+                    <a href="/users" class="btn btn-outline-secondary">إلغاء</a>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@code {
+    private RegisterModel model = new();
+    private List<(long Id, string NameAr)> availableCourts = new();
+    private List<(long Id, string NameAr, string Code)> availableRoles = new();
+    private bool isAuthorized = false;
+    private bool isSubmitting = false;
+    private string? statusMessage;
+    private bool isError = false;
+    private long currentAppUserId;
+    private bool isSystemAdmin = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = auth.User;
+        if (!user.Identity?.IsAuthenticated == true) { NavigationManager.NavigateTo("/Account/Login"); return; }
+
+        var identitySubject = user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+                              ?? user.Identity?.Name ?? string.Empty;
+
+        var currentAppUser = await DbContext.AppUsers.FirstOrDefaultAsync(u => u.IdentitySubject == identitySubject || u.Email == user.Identity!.Name);
+        if (currentAppUser is null) return;
+        currentAppUserId = currentAppUser.Id;
+
+        var currentGrants = await DbContext.UserCourtGrants
+            .Include(g => g.Role)
+            .Include(g => g.CourtUnit)
+            .Where(g => g.UserId == currentAppUserId && g.IsActive)
+            .ToListAsync();
+
+        isSystemAdmin = currentGrants.Any(g => g.Role.Code == RoleCodes.SystemAdmin);
+        bool isScopeAdmin = currentGrants.Any(g => g.Role.Code == RoleCodes.ScopeAdmin);
+        isAuthorized = isSystemAdmin || isScopeAdmin;
+
+        if (!isAuthorized) return;
+
+        // Available courts: top-level primary courts the current user has a grant on
+        var grantedCourtIds = currentGrants.Select(g => g.CourtUnitId).Distinct().ToList();
+        availableCourts = await DbContext.CourtUnits
+            .Where(c => (c.ParentCourtUnitId == null) && (isSystemAdmin || grantedCourtIds.Contains(c.Id)) && c.IsActive)
+            .Select(c => new { c.Id, c.NameAr })
+            .OrderBy(c => c.NameAr)
+            .AsAsyncEnumerable()
+            .Select(c => (c.Id, c.NameAr))
+            .ToListAsync();
+
+        // Available roles: all roles except SystemAdmin (unless current user is SystemAdmin)
+        var rolesQuery = DbContext.AppRoles.AsQueryable();
+        if (!isSystemAdmin)
+            rolesQuery = rolesQuery.Where(r => r.Code != RoleCodes.SystemAdmin);
+
+        availableRoles = await rolesQuery
+            .OrderBy(r => r.Id)
+            .AsAsyncEnumerable()
+            .Select(r => (r.Id, r.NameAr, r.Code))
+            .ToListAsync();
+    }
+
+    private async Task HandleRegister()
+    {
+        isSubmitting = true;
+        statusMessage = null;
+        isError = false;
+
+        try
+        {
+            if (model.Password != model.ConfirmPassword)
+            {
+                statusMessage = "كلمة المرور وتأكيدها غير متطابقين.";
+                isError = true;
+                return;
+            }
+
+            if (model.CourtUnitId == 0 || model.RoleId == 0)
+            {
+                statusMessage = "يرجى اختيار المحكمة والدور.";
+                isError = true;
+                return;
+            }
+
+            // Check email not already in use
+            var existingIdentity = await UserManager.FindByEmailAsync(model.Email);
+            if (existingIdentity is not null)
+            {
+                statusMessage = "البريد الإلكتروني مستخدم مسبقاً.";
+                isError = true;
+                return;
+            }
+
+            // Create Identity user
+            var identityUser = new ApplicationUser
+            {
+                UserName = model.Email,
+                Email = model.Email,
+                EmailConfirmed = true
+            };
+
+            var createResult = await UserManager.CreateAsync(identityUser, model.Password);
+            if (!createResult.Succeeded)
+            {
+                statusMessage = string.Join(" | ", createResult.Errors.Select(e => e.Description));
+                isError = true;
+                return;
+            }
+
+            // Create AppUser
+            var appUser = new AppUser
+            {
+                IdentitySubject = identityUser.Id,
+                FullNameAr = model.FullNameAr,
+                Email = model.Email,
+                IsEnabled = true,
+                CreatedAt = DateTime.UtcNow
+            };
+            DbContext.AppUsers.Add(appUser);
+            await DbContext.SaveChangesAsync();
+
+            // Create UserCourtGrant
+            DbContext.UserCourtGrants.Add(new UserCourtGrant
+            {
+                UserId = appUser.Id,
+                CourtUnitId = model.CourtUnitId,
+                RoleId = model.RoleId,
+                SessionScopeMode = "AllSessions",
+                ValidFrom = DateOnly.FromDateTime(DateTime.Today),
+                IsActive = true
+            });
+            await DbContext.SaveChangesAsync();
+
+            statusMessage = $"تم إنشاء حساب {model.FullNameAr} بنجاح.";
+            isError = false;
+            model = new();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"خطأ: {ex.Message}";
+            isError = true;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    public class RegisterModel
+    {
+        [System.ComponentModel.DataAnnotations.Required(ErrorMessage = "الاسم مطلوب")]
+        public string FullNameAr { get; set; } = string.Empty;
+
+        [System.ComponentModel.DataAnnotations.Required(ErrorMessage = "البريد مطلوب")]
+        [System.ComponentModel.DataAnnotations.EmailAddress(ErrorMessage = "بريد إلكتروني غير صحيح")]
+        public string Email { get; set; } = string.Empty;
+
+        [System.ComponentModel.DataAnnotations.Required(ErrorMessage = "كلمة المرور مطلوبة")]
+        [System.ComponentModel.DataAnnotations.MinLength(6, ErrorMessage = "6 أحرف على الأقل")]
+        public string Password { get; set; } = string.Empty;
+
+        [System.ComponentModel.DataAnnotations.Required(ErrorMessage = "تأكيد كلمة المرور مطلوب")]
+        public string ConfirmPassword { get; set; } = string.Empty;
+
+        [System.ComponentModel.DataAnnotations.Range(1, long.MaxValue, ErrorMessage = "اختر المحكمة")]
+        public long CourtUnitId { get; set; }
+
+        [System.ComponentModel.DataAnnotations.Range(1, long.MaxValue, ErrorMessage = "اختر الدور")]
+        public long RoleId { get; set; }
+    }
+}

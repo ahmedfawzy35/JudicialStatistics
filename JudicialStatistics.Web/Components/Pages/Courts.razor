@@ -1,0 +1,496 @@
+@page "/courts"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using Microsoft.AspNetCore.Authorization
+@implements IDisposable
+@inject ICourtsService CourtsService
+@inject JudicialStatistics.Web.Services.CurrentCourtState CourtState
+@inject AuthenticationStateProvider AuthStateProvider
+
+<PageTitle>المحاكم والنطاقات — الإحصاء القضائي</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🏛️ إدارة المحاكم والنطاقات</h1>
+        <p class="page-subtitle">
+            @if (CourtState.IsSystemAdmin)
+            {
+                <span>الهيكل التنظيمي للمحاكم ونطاقات رفع التقارير (عرض شامل - مدير النظام العام)</span>
+            }
+            else
+            {
+                <span>الهيكل التنظيمي التابع لـ: <strong style="color:var(--brand-primary)">@CourtState.SelectedPrimaryCourtName</strong></span>
+            }
+        </p>
+    </div>
+    <div class="page-actions d-flex gap-2">
+        @if (CourtState.IsSystemAdmin)
+        {
+            <button class="btn btn-outline-primary" @onclick="OpenAddPrimaryCourtModal">
+                🏛️ إنشاء محكمة ابتدائية جديدة
+            </button>
+        }
+        <button class="btn btn-primary" @onclick="OpenAddModal">
+            ➕ إضافة وحدة محكمة تابعة
+        </button>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success") mb-4">
+        <span>@(isError ? "⚠️" : "✅") @statusMessage</span>
+    </div>
+}
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem">
+    @* شجرة المحاكم *@
+    <div class="card">
+        <div class="card-header">
+            <span class="card-title">🏢 شجرة وحدات المحكمة</span>
+        </div>
+        <div class="card-body">
+            @if (courtTree is null)
+            {
+                <div class="d-flex align-center gap-2">
+                    <div class="spinner"></div>
+                    <span>جاري تحميل البيانات...</span>
+                </div>
+            }
+            else if (courtTree.Count == 0)
+            {
+                <div class="text-muted-color">لا توجد محاكم مسجلة تابعة لهذه المحكمة الابتدائية.</div>
+            }
+            else
+            {
+                <div class="court-tree">
+                    @foreach (var unit in courtTree)
+                    {
+                        @RenderCourtNode(unit, 0)
+                    }
+                </div>
+            }
+        </div>
+    </div>
+
+    @* نطاقات التقارير *@
+    <div class="card">
+        <div class="card-header">
+            <span class="card-title">📑 نطاقات التقارير (Reporting Scopes)</span>
+        </div>
+        <div class="card-body" style="padding:0">
+            @if (reportingScopes is null)
+            {
+                <div style="padding:1.5rem" class="d-flex align-center gap-2">
+                    <div class="spinner"></div>
+                    <span>جاري التحميل...</span>
+                </div>
+            }
+            else if (reportingScopes.Count == 0)
+            {
+                <div style="padding:1.5rem" class="text-muted-color">لا توجد نطاقات تقارير تابعة لهذه المحكمة الابتدائية.</div>
+            }
+            else
+            {
+                <div class="table-wrapper" style="border:none">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>الكود</th>
+                                <th>اسم النطاق</th>
+                                <th>المحكمة الرئيسية</th>
+                                <th>الحالة</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var scope in reportingScopes)
+                            {
+                                <tr>
+                                    <td><code>@scope.Code</code></td>
+                                    <td class="fw-semibold">@scope.NameAr</td>
+                                    <td>@scope.RootCourtNameAr</td>
+                                    <td>
+                                        <span class="badge @(scope.IsActive ? "badge-success" : "badge-muted")">
+                                            @(scope.IsActive ? "نشط" : "معطل")
+                                        </span>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@* Modal إضافة وحدة محكمة تابعة *@
+@if (showAddModal)
+{
+    <div class="modal-backdrop" @onclick="CloseAddModal">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">➕ إضافة وحدة محكمة تابعة</span>
+                <button class="modal-close" @onclick="CloseAddModal">✕</button>
+            </div>
+            <EditForm Model="createModel" OnValidSubmit="HandleCreateCourtUnit">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label class="form-label">المحكمة الأم (الابتدائية)</label>
+                        @if (!CourtState.IsSystemAdmin)
+                        {
+                            <input type="text" class="form-control" value="@CourtState.SelectedPrimaryCourtName" disabled readonly />
+                            <small class="text-muted">تتبع المحكمة الابتدائية التي تديرها تلقائياً ولا يمكن تغييرها.</small>
+                        }
+                        else
+                        {
+                            <InputSelect class="form-control" @bind-Value="createModel.ParentCourtUnitId" @bind-Value:after="AutoGenerateSubCourtCode">
+                                @if (flatCourts is not null)
+                                {
+                                    @foreach (var c in flatCourts.Where(c => c.ParentCourtUnitId == null))
+                                    {
+                                        <option value="@c.Id">@c.NameAr (@c.Code)</option>
+                                    }
+                                }
+                            </InputSelect>
+                        }
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> نوع الوحدة القضائية</label>
+                        <InputSelect class="form-control" @bind-Value="createModel.UnitKind" @bind-Value:after="AutoGenerateSubCourtCode">
+                            <option value="SummaryCourt">⚖️ محكمة جزئية</option>
+                            <option value="PlenaryHeadquarters">🏢 مأمورية كلية</option>
+                            <option value="FamilyCourt">👨‍👩‍👧 محكمة أسرة</option>
+                            <option value="LaborCourt">👷 محكمة عمالية</option>
+                        </InputSelect>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> اسم المحكمة بالعربية</label>
+                        <InputText class="form-control" @bind-Value="createModel.NameAr" placeholder="مثال: محكمة ناصر الجزئية" required />
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> كود المحكمة</label>
+                        <div class="d-flex gap-2">
+                            <InputText class="form-control" @bind-Value="createModel.Code" placeholder="مثال: BNISF-NASSER" required />
+                            <button type="button" class="btn btn-outline-secondary" @onclick="AutoGenerateSubCourtCode" title="توليد كود مقترح">🔄 توليد</button>
+                        </div>
+                    </div>
+
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseAddModal">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">
+                        @(isSubmitting ? "جاري الحفظ..." : "حفظ")
+                    </button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@* Modal إنشاء محكمة ابتدائية جديدة (مدير النظام العام فقط) *@
+@if (showAddPrimaryCourtModal && CourtState.IsSystemAdmin)
+{
+    <div class="modal-backdrop" @onclick="CloseAddPrimaryCourtModal">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <span class="modal-title">🏛️ إنشاء محكمة ابتدائية جديدة (مستقلة)</span>
+                <button class="modal-close" @onclick="CloseAddPrimaryCourtModal">✕</button>
+            </div>
+            <EditForm Model="primaryCourtModel" OnValidSubmit="HandleCreatePrimaryCourt">
+                <div class="modal-body">
+                    <div class="alert alert-info py-2 mb-3">
+                        <small>ℹ️ المحكمة الابتدائية هي وحدة جذرية مستقلة وتعتبر المحكمة الأم لنطاق تقارير كامل يضم المحاكم الجزئية والمأموريات ومحاكم الأسرة والعمال التابعة لها.</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> اسم المحكمة الابتدائية بالعربية</label>
+                        <InputText class="form-control" @bind-Value="primaryCourtModel.NameAr" placeholder="مثال: محكمة أسوان الابتدائية" required />
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label"><span class="required">*</span> كود المحكمة الابتدائية</label>
+                        <InputText class="form-control" @bind-Value="primaryCourtModel.Code" placeholder="مثال: ASWAN" required />
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="CloseAddPrimaryCourtModal">إلغاء</button>
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">
+                        @(isSubmitting ? "جاري الحفظ..." : "إنشاء المحكمة الابتدائية")
+                    </button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@code {
+    private List<CourtUnitDto>? allCourtTree;
+    private List<CourtUnitDto>? allFlatCourts;
+    private List<ReportingScopeDto>? allReportingScopes;
+
+    private List<CourtUnitDto>? courtTree;
+    private List<CourtUnitDto>? flatCourts;
+    private List<ReportingScopeDto>? reportingScopes;
+
+    private bool showAddModal = false;
+    private bool showAddPrimaryCourtModal = false;
+    private bool isSubmitting = false;
+    private string? statusMessage;
+    private bool isError = false;
+
+    private CourtUnitFormModel createModel = new();
+    private PrimaryCourtFormModel primaryCourtModel = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        CourtState.OnChange += OnCourtStateChanged;
+        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+        if (auth.User.Identity?.IsAuthenticated == true)
+        {
+            await CourtState.EnsureInitializedAsync(auth.User);
+        }
+        await LoadDataAsync();
+    }
+
+    public void Dispose()
+    {
+        CourtState.OnChange -= OnCourtStateChanged;
+    }
+
+    private void OnCourtStateChanged()
+    {
+        InvokeAsync(async () =>
+        {
+            await LoadDataAsync();
+            StateHasChanged();
+        });
+    }
+
+    private async Task LoadDataAsync()
+    {
+        allCourtTree = await CourtsService.GetTreeAsync();
+        allFlatCourts = await CourtsService.GetFlatAsync(false);
+        allReportingScopes = await CourtsService.GetReportingScopesAsync();
+
+        FilterData();
+    }
+
+    private void FilterData()
+    {
+        if (CourtState.IsSystemAdmin)
+        {
+            courtTree = allCourtTree;
+            flatCourts = allFlatCourts;
+            reportingScopes = allReportingScopes;
+        }
+        else
+        {
+            var primaryId = CourtState.SelectedPrimaryCourtId;
+            if (primaryId.HasValue)
+            {
+                courtTree = allCourtTree?.Where(c => c.Id == primaryId.Value).ToList() ?? new();
+                flatCourts = allFlatCourts?.Where(c => c.Id == primaryId.Value || c.ParentCourtUnitId == primaryId.Value).ToList() ?? new();
+                reportingScopes = allReportingScopes?.Where(r => r.RootCourtUnitId == primaryId.Value).ToList() ?? new();
+            }
+            else
+            {
+                courtTree = new();
+                flatCourts = new();
+                reportingScopes = new();
+            }
+        }
+    }
+
+    private void OpenAddModal()
+    {
+        createModel = new CourtUnitFormModel
+        {
+            ParentCourtUnitId = CourtState.SelectedPrimaryCourtId ?? flatCourts?.FirstOrDefault(c => c.ParentCourtUnitId == null)?.Id,
+            UnitKind = "SummaryCourt"
+        };
+        AutoGenerateSubCourtCode();
+        showAddModal = true;
+    }
+
+    private void CloseAddModal() => showAddModal = false;
+
+    private void OpenAddPrimaryCourtModal()
+    {
+        primaryCourtModel = new PrimaryCourtFormModel();
+        showAddPrimaryCourtModal = true;
+    }
+
+    private void CloseAddPrimaryCourtModal() => showAddPrimaryCourtModal = false;
+
+    private void AutoGenerateSubCourtCode()
+    {
+        var parentId = createModel.ParentCourtUnitId ?? CourtState.SelectedPrimaryCourtId;
+        var parent = allFlatCourts?.FirstOrDefault(c => c.Id == parentId);
+        var pCode = parent?.Code ?? "COURT";
+
+        var kindCode = createModel.UnitKind switch
+        {
+            "PlenaryHeadquarters" => "PLEN",
+            "SummaryCourt" => "SUMM",
+            "FamilyCourt" => "FAM",
+            "LaborCourt" => "LAB",
+            _ => "UNIT"
+        };
+
+        int count = (allFlatCourts?.Count(c => c.ParentCourtUnitId == parentId && c.UnitKind == createModel.UnitKind) ?? 0) + 1;
+        createModel.Code = $"{pCode}-{kindCode}-{count:D2}".ToUpperInvariant();
+    }
+
+    private async Task HandleCreateCourtUnit()
+    {
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            if (!CourtState.IsSystemAdmin)
+            {
+                createModel.ParentCourtUnitId = CourtState.SelectedPrimaryCourtId;
+            }
+
+            if (!createModel.ParentCourtUnitId.HasValue)
+            {
+                throw new InvalidOperationException("يجب اختيار المحكمة الابتدائية التابعة لها هذه الوحدة.");
+            }
+
+            if (createModel.UnitKind == "Court")
+            {
+                throw new InvalidOperationException("لا يجوز إنشاء محكمة ابتدائية كوحدة تابعة. لإنشاء محكمة ابتدائية مستقلة يرجى استخدام شاشة مدير النظام.");
+            }
+
+            if (string.IsNullOrWhiteSpace(createModel.Code))
+            {
+                AutoGenerateSubCourtCode();
+            }
+
+            await CourtsService.CreateCourtUnitAsync(new CourtUnitCreateCommand(
+                createModel.ParentCourtUnitId,
+                createModel.Code.Trim().ToUpperInvariant(),
+                createModel.NameAr.Trim(),
+                createModel.UnitKind
+            ));
+
+            statusMessage = $"تمت إضافة الوحدة '{createModel.NameAr}' بنجاح.";
+            isError = false;
+            showAddModal = false;
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private async Task HandleCreatePrimaryCourt()
+    {
+        try
+        {
+            isSubmitting = true;
+            statusMessage = null;
+
+            if (!CourtState.IsSystemAdmin)
+            {
+                throw new InvalidOperationException("غير مصرح لك بإنشاء محاكم ابتدائية. هذه الصلاحية مقتصرة على مدير النظام العام فقط.");
+            }
+
+            if (string.IsNullOrWhiteSpace(primaryCourtModel.Code) || string.IsNullOrWhiteSpace(primaryCourtModel.NameAr))
+            {
+                throw new InvalidOperationException("يرجى ملء جميع الحقول المطلوبة للمحكمة الابتدائية.");
+            }
+
+            await CourtsService.CreateCourtUnitAsync(new CourtUnitCreateCommand(
+                null,
+                primaryCourtModel.Code.Trim().ToUpperInvariant(),
+                primaryCourtModel.NameAr.Trim(),
+                "Court"
+            ));
+
+            statusMessage = $"تم إنشاء المحكمة الابتدائية '{primaryCourtModel.NameAr}' وتأسيس نطاق تقاريرها بنجاح.";
+            isError = false;
+            showAddPrimaryCourtModal = false;
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private async Task ToggleCourtActive(long id)
+    {
+        await CourtsService.ToggleActiveAsync(id);
+        await LoadDataAsync();
+    }
+
+    private static string GetUnitKindNameAr(string kind) => kind switch
+    {
+        "Court" => "محكمة ابتدائية",
+        "PlenaryHeadquarters" => "مأمورية كلية",
+        "SummaryCourt" => "محكمة جزئية",
+        "FamilyCourt" => "محكمة أسرة",
+        "LaborCourt" => "محكمة عمالية",
+        _ => kind
+    };
+
+    private RenderFragment RenderCourtNode(CourtUnitDto node, int level) => __builder =>
+    {
+        <div style="margin-right:@(level * 1.5)rem; margin-bottom:.5rem; padding:.5rem; background:var(--surface-bg); border-radius:var(--radius-md); border-right:3px solid var(--brand-secondary)">
+            <div class="d-flex justify-between align-center">
+                <div>
+                    <span style="font-weight:600">@node.NameAr</span>
+                    <span style="font-size:.8rem;color:var(--text-muted);margin-right:.5rem">(@node.Code - @GetUnitKindNameAr(node.UnitKind))</span>
+                </div>
+                <div class="d-flex align-center gap-2">
+                    <span class="badge @(node.IsActive ? "badge-success" : "badge-muted")">
+                        @(node.IsActive ? "نشط" : "معطل")
+                    </span>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => ToggleCourtActive(node.Id)">
+                        @(node.IsActive ? "تعطيل" : "تفعيل")
+                    </button>
+                </div>
+            </div>
+            @if (node.Children.Count > 0)
+            {
+                <div style="margin-top:.5rem">
+                    @foreach (var child in node.Children)
+                    {
+                        @RenderCourtNode(child, level + 1)
+                    }
+                </div>
+            }
+        </div>
+    };
+
+    public class CourtUnitFormModel
+    {
+        public long? ParentCourtUnitId { get; set; }
+        public string Code { get; set; } = string.Empty;
+        public string NameAr { get; set; } = string.Empty;
+        public string UnitKind { get; set; } = "SummaryCourt";
+    }
+
+    public class PrimaryCourtFormModel
+    {
+        public string Code { get; set; } = string.Empty;
+        public string NameAr { get; set; } = string.Empty;
+    }
+}

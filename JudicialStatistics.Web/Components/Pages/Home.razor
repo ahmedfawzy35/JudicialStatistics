@@ -1,0 +1,78 @@
+@page "/"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@implements IDisposable
+@inject JudicialStatistics.Web.Services.CurrentCourtState CourtState
+@inject AuthenticationStateProvider AuthStateProvider
+
+<PageTitle>الرئيسية — الإحصاء القضائي</PageTitle>
+
+<div class="page-header mb-4">
+    <div>
+        <h1 class="page-title">🏠 الرئيسية</h1>
+        <p class="page-subtitle">
+            <span>نظام الإحصاء القضائي — </span>
+            <strong style="color:var(--brand-primary);">@CourtState.SelectedPrimaryCourtName</strong>
+        </p>
+    </div>
+    <div class="d-flex align-center gap-2">
+        <span class="badge badge-secondary" style="font-size:0.85rem;padding:.4rem .8rem;">
+            👤 @(string.IsNullOrEmpty(CourtState.CurrentUserFullName) ? "جاري التحميل..." : CourtState.CurrentUserFullName)
+            @if (!string.IsNullOrEmpty(CourtState.CurrentUserRoleName))
+            {
+                <span>(@CourtState.CurrentUserRoleName)</span>
+            }
+        </span>
+    </div>
+</div>
+
+<div class="card" style="text-align:center;padding:4rem 2rem;margin-top:1rem;background:var(--surface-card);border:1px dashed var(--surface-border);">
+    <div style="font-size:3.5rem;margin-bottom:1rem;color:var(--brand-primary-light);">📊</div>
+    <h2 style="font-size:1.4rem;font-weight:700;color:var(--text-primary);margin-bottom:.75rem">
+        لوحة المؤشرات والتقارير الإحصائية
+    </h2>
+    <p style="color:var(--text-secondary);max-width:540px;margin:0 auto 2rem;font-size:0.95rem;line-height:1.7;">
+        هذه الصفحة مخصصة لعرض التقارير التحليلية والمؤشرات الشهرية والتراكمية لدائرة المحكمة الابتدائية، وستظهر البيانات تلقائياً بمجرد إتاحة وبرمجة التقارير في المرحلة القادمة.
+    </p>
+
+    <div class="d-flex gap-3 justify-content-center flex-wrap">
+        <a href="/statistics" class="btn btn-primary d-flex align-center gap-2" style="padding:.6rem 1.25rem;">
+            <span>📊</span>
+            <span>الإحصائيات الشهرية وإدخال البيانات</span>
+        </a>
+        <a href="/organization" class="btn btn-outline-secondary d-flex align-center gap-2" style="padding:.6rem 1.25rem;">
+            <span>🗂️</span>
+            <span>التشكيل القضائي والدوائر</span>
+        </a>
+        @if (CourtState.IsSystemAdmin || CourtState.IsScopeAdmin)
+        {
+            <a href="/users" class="btn btn-outline-secondary d-flex align-center gap-2" style="padding:.6rem 1.25rem;">
+                <span>👥</span>
+                <span>إدارة المستخدمين والصلاحيات</span>
+            </a>
+        }
+    </div>
+</div>
+
+@code {
+    protected override async Task OnInitializedAsync()
+    {
+        CourtState.OnChange += OnCourtStateChanged;
+
+        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+        if (auth.User.Identity?.IsAuthenticated == true)
+        {
+            await CourtState.EnsureInitializedAsync(auth.User);
+        }
+    }
+
+    private void OnCourtStateChanged()
+    {
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        CourtState.OnChange -= OnCourtStateChanged;
+    }
+}
